@@ -1,0 +1,9 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_openai_prompt_user,openai.prompt.user,model_openai_prompt,base.group_user,1,1,1,1
+access_ai_chat_user,openai.prompt.user,model_ai_chat,base.group_user,1,1,1,1
+access_ai_chat_user,ai.chat.user,model_ai_chat,base.group_user,1,1,1,0
+access_ai_chat_admin,ai.chat.admin,model_ai_chat,base.group_system,1,1,1,1
+access_ai_chat_message_user,ai.chat.message.user,model_ai_chat_message,base.group_user,1,1,1,0
+access_ai_chat_message_admin,ai.chat.message.admin,model_ai_chat_message,base.group_system,1,1,1,1
+access_ai_user_settings_own,ai.user.settings.own,model_ai_user_settings,base.group_user,1,1,1,0
+access_ai_user_settings_admin,ai.user.settings.admin,model_ai_user_settings,base.group_system,1,1,1,1

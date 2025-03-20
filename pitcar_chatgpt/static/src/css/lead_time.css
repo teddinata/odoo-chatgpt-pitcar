@@ -1,0 +1,247 @@
+.o_form_view .o_group {
+  margin-bottom: 20px;
+}
+
+.o_form_view .lead_time_widget {
+  margin-bottom: 10px;
+}
+
+.o_form_view .btn-sm {
+  width: 100%;
+}
+
+.o_form_view .o_horizontal_separator {
+  color: #7C7BAD;
+  font-weight: bold;
+}
+
+.o_form_view .o_group.o_inner_group.controller_group {
+  width: 100%;
+}
+
+.o_form_view .o_group.o_inner_group.controller_group > tbody > tr > td.o_td_label {
+  width: 200px;
+  min-width: 200px;
+}
+
+.o_form_view .lead_time_widget {
+  width: 120px !important;
+  margin-right: 5px;
+}
+
+.o_form_view .oe_inline + .oe_inline {
+  margin-left: 10px;
+}
+
+.o_form_view .oe_inline + .oe_inline.oe_link {
+  margin-left: 10px;
+}
+
+.o_form_view .car_arrival_time_container {
+  display: flex;
+  align-items: center;
+}
+
+.o_form_view .car_arrival_time_container > * {
+  margin-right: 10px;
+}
+
+.o_group_controller .o_form_label {
+  width: auto !important; /* Set width ke auto agar tidak mempengaruhi layout */
+  max-width: none;
+  min-width: auto;
+}
+.o_group_controller .o_input_controller {
+  width: 50% !important;
+  min-width: 200px;
+}
+
+.o_group_controller .o_group {
+  margin-bottom: 15px;
+  width: 100%;
+}
+
+.o_group_controller .o_group > tbody > tr > td.o_td_label {
+  padding-right: 15px;
+}
+
+.o_group_controller .o_group > tbody > tr > td.o_td_label + td {
+  padding-left: 15px;
+}
+
+.o_group_controller .o_input_controller input {
+  width: 100% !important;
+  padding: 6px 12px;
+  font-size: 14px;
+}
+
+.o_group_controller .o_group > tbody > tr {
+  display: flex;
+  width: 100%;
+  margin-bottom: 10px;
+}
+
+.o_group_controller .o_group > tbody > tr > td {
+  flex: 1;
+}
+
+.o_group_controller2 .o_form_label {
+  width: 100%; /* Set width ke auto agar tidak mempengaruhi layout */
+  max-width: none;
+  min-width: 200px;
+}
+
+/* radio */
+.o_group_controller .o_radio_container {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px; /* Mengatur jarak antara radio button dan label */
+  min-width: auto !important; /* Memastikan kontainer tidak terlalu lebar */
+  margin-right: 10px; /* Sesuaikan jarak antara label Ya dan Tidak */
+}
+
+/* Timeline Container */
+.timeline-container {
+  margin: 1rem 0;
+  padding: 2rem 1rem;
+  background: white;
+  width: 100%;
+  overflow-x: auto;
+}
+
+.timeline-track {
+  position: relative;
+  min-height: 150px;
+  width: 100%;
+  min-width: 800px;
+}
+
+/* Timeline Line */
+.timeline-events {
+  position: relative;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 40px;
+  width: 100%;
+}
+
+/* Main Horizontal Line */
+.timeline-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 2px;
+  background: #e0e0e0;
+  z-index: 0;
+}
+
+/* Event Item */
+.timeline-event {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 120px;
+  margin: 0 15px;
+}
+
+/* Event Title (Above Circle) */
+.event-title {
+  position: absolute;
+  top: -5px;
+  text-align: center;
+  font-weight: 500;
+  font-size: 0.875rem;
+  color: #333;
+  width: 100%;
+  white-space: nowrap;
+}
+
+/* Event Marker (Circle) */
+.event-marker {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  border: 2px solid #e0e0e0;
+  position: relative;
+  z-index: 2;
+  margin: 20px 0;
+}
+
+/* Connecting Lines */
+.event-line {
+  position: absolute;
+  height: 2px;
+  background: #e0e0e0;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 1;
+}
+
+.event-line.left {
+  right: 50%;
+  left: -50%;
+}
+
+.event-line.right {
+  left: 50%;
+  right: -50%;
+}
+
+/* Event Time (Below Circle) */
+.event-time {
+  position: absolute;
+  bottom: -25px;
+  text-align: center;
+  font-size: 0.75rem;
+  color: #666;
+  width: 100%;
+  white-space: nowrap;
+}
+
+/* Event Duration */
+.event-duration {
+  position: absolute;
+  bottom: -45px;
+  text-align: center;
+  font-size: 0.75rem;
+  color: #666;
+  width: 100%;
+}
+
+/* Marker Colors */
+.event-marker.start { 
+  border-color: #4caf50;
+  background: #4caf50;
+}
+.event-marker.end { 
+  border-color: #4caf50;
+  background: #4caf50;
+}
+.event-marker.konfirmasi { 
+  border-color: #f44336;
+  background: #f44336;
+}
+.event-marker.part { 
+  border-color: #ff9800;
+  background: #ff9800;
+}
+.event-marker.break { 
+  border-color: #2196f3;
+  background: #2196f3;
+}
+
+/* Custom Timeline Colors */
+.timeline-event.active .event-marker {
+  box-shadow: 0 0 0 4px rgba(76, 175, 80, 0.2);
+}
+
+/* Responsive */
+@media (max-width: 1200px) {
+  .timeline-track {
+      min-width: 600px;
+  }
+}

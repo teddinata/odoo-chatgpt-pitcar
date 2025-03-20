@@ -1,0 +1,41 @@
+/* custom_dashboard.css */
+
+.o_kanban_view.o_kanban_full_dashboard {
+  width: 100%;
+  max-width: 100vw;
+  padding: 0 10px; /* Adjust padding as necessary */
+}
+
+.o_kanban_view .o_kanban_record {
+  width: 100%;
+}
+
+.card {
+  width: 100%;
+  margin-bottom: 20px; /* Adds some spacing between cards */
+}
+
+.d-flex.flex-wrap {
+  flex-wrap: wrap;
+  justify-content: space-between; /* Distributes cards evenly across the row */
+}
+
+/* Ensure the entire Kanban container takes full width */
+.o_kanban_full_dashboard .o_kanban_view {
+  width: 100% !important;
+  max-width: 100vw !important;
+  padding: 10px !important; /* Add some padding to give the cards space */
+}
+
+/* Adjust card width within the Kanban view */
+.o_kanban_full_dashboard .o_kanban_view .o_kanban_record {
+  width: calc(33% - 20px) !important; /* Makes cards take 33% of width with some space in between */
+  margin: 10px !important; /* Adds spacing between cards */
+}
+
+/* Make sure Kanban container respects flex properties */
+.o_kanban_full_dashboard .o_kanban_view {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  justify-content: space-between !important;
+}

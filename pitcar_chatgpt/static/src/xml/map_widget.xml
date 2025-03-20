@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+    <t t-name="pitcar_custom.MapWidget">
+        <div class="o_map_widget h-100">
+            <div t-ref="mapRef" style="height: 500px;"/>
+        </div>
+    </t>
+</templates>

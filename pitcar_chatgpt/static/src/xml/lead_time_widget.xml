@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates id="template" xml:space="preserve">
+    <t t-name="LeadTimeWidgetTemplate">
+        <div class="lead_time_widget">
+            <span class="timer-value"></span>
+            <button class="start-timer btn btn-primary btn-sm">Start</button>
+            <button class="stop-timer btn btn-secondary btn-sm">Stop</button>
+            <button class="reset-timer btn btn-danger btn-sm">Reset</button>
+        </div>
+    </t>
+</templates>

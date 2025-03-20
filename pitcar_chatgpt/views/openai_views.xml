@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_openai_prompt_tree" model="ir.ui.view">
+        <field name="name">openai.prompt.tree</field>
+        <field name="model">openai.prompt</field>
+        <field name="arch" type="xml">
+            <tree decoration-danger="state=='error'" decoration-success="state=='done'">
+                <field name="name"/>
+                <field name="model"/>
+                <field name="create_date"/>
+                <field name="state"/>
+                <field name="token_count"/>
+            </tree>
+        </field>
+    </record>
+
+    <record id="view_openai_prompt_form" model="ir.ui.view">
+        <field name="name">openai.prompt.form</field>
+        <field name="model">openai.prompt</field>
+        <field name="arch" type="xml">
+            <form>
+                <header>
+                    <button name="action_generate_response" 
+                            string="Generate Response" 
+                            type="object" 
+                            class="oe_highlight"
+                            attrs="{'invisible': [('state', '=', 'done')]}"/>
+                    <field name="state" widget="statusbar"/>
+                </header>
+                <sheet>
+                    <group>
+                        <group>
+                            <field name="name"/>
+                            <field name="model"/>
+                        </group>
+                        <group>
+                            <field name="create_date" readonly="1"/>
+                            <field name="token_count" readonly="1"/>
+                        </group>
+                    </group>
+                    <notebook>
+                        <page string="Prompt">
+                            <field name="prompt" placeholder="Enter your prompt here..."/>
+                        </page>
+                        <page string="Response">
+                            <field name="response" readonly="1"/>
+                        </page>
+                        <page string="Error" attrs="{'invisible': [('error_message', '=', False)]}">
+                            <field name="error_message" readonly="1"/>
+                        </page>
+                    </notebook>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_openai_prompt" model="ir.actions.act_window">
+        <field name="name">OpenAI Prompts</field>
+        <field name="res_model">openai.prompt</field>
+        <field name="view_mode">tree,form</field>
+    </record>
+
+    <menuitem id="menu_openai_root"
+              name="OpenAI"
+              sequence="10"/>
+
+    <menuitem id="menu_openai_prompt"
+              name="Prompts"
+              parent="menu_openai_root"
+              action="action_openai_prompt"
+              sequence="10"/>
+</odoo>
