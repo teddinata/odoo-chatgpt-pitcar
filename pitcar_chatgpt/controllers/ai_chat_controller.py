@@ -264,17 +264,6 @@ class AIController(http.Controller):
             message_content = params.get('message', '')
             model = params.get('model', None)  # Optional model override
             
-            # Get business data parameters
-            include_business_data = params.get('include_business_data', False)
-            data_context = params.get('data_context', 'balanced')
-            data_modules = params.get('data_modules', [])
-            
-            # Get time range parameters
-            time_range = params.get('time_range', {})
-            
-            # Get visualization parameters
-            visualization = params.get('visualization', 'auto')
-            
             if not message_content:
                 return {'success': False, 'error': 'Message content is required'}
             
@@ -288,53 +277,35 @@ class AIController(http.Controller):
             # Update chat's last message date
             chat.last_message_date = user_message.create_date
             
-            # Process business data if needed
-            business_context = None
-            if include_business_data:
-                business_context = self._get_business_data_context(
-                    data_context, 
-                    data_modules, 
-                    time_range, 
-                    visualization
-                )
-            
-            # Get AI response
-            ai_service = request.env['ai.service'].sudo()
-            response = ai_service.get_ai_response(
-                chat, 
-                message_content, 
-                model=model,
-                business_context=business_context
-            )
+            # Get AI response directly from chat model
+            response = chat.send_message(message_content, model)
             
             if 'error' in response:
                 return {'success': False, 'error': response['error']}
             
-            # Create AI message
-            ai_message = request.env['ai.chat.message'].sudo().create({
-                'chat_id': chat.id,
-                'content': response['content'],
-                'message_type': 'assistant',
-                'model_used': response.get('model_used', model),
-                'token_count': response.get('token_count', 0),
-            })
+            # Pastikan response yang dikembalikan memiliki struktur yang benar
+            # Jika response sudah berisi 'response', gunakan langsung
+            if 'response' in response:
+                return response
             
-            # Update chat's last message date
-            chat.last_message_date = ai_message.create_date
-            
-            return {
-                'success': True,
-                'response': {
-                    'id': ai_message.id,
-                    'message_id': ai_message.message_uuid if hasattr(ai_message, 'message_uuid') else f"msg_{ai_message.id}",
-                    'content': ai_message.content,
-                    'model_used': ai_message.model_used if hasattr(ai_message, 'model_used') else model,
-                    'token_count': ai_message.token_count if hasattr(ai_message, 'token_count') else 0,
+            # Jika response tidak memiliki 'response' tetapi memiliki 'content', konversi formatnya
+            if 'content' in response:
+                return {
+                    'success': True,
+                    'response': {
+                        'content': response['content'],
+                        'model_used': response.get('model_used', model),
+                        'token_count': response.get('token_count', 0),
+                        'id': response.get('id', 0),
+                        'message_id': response.get('message_uuid', '')
+                    }
                 }
-            }
+                
+            # Jika struktur tidak dikenali, kembalikan error
+            return {'success': False, 'error': 'Invalid response format from AI model'}
             
         except Exception as e:
-            _logger.error(f"Error sending message: {str(e)}")
+            _logger.error(f"Error sending message: {str(e)}", exc_info=True)
             return {'success': False, 'error': str(e)}
     
     def _get_ai_settings(self, params):
