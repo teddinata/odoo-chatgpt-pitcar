@@ -119,7 +119,6 @@ class AIController(http.Controller):
                 'name': name,
                 'user_id': request.env.user.id,
                 'company_id': request.env.company.id,
-                'category': category,
             })
             
             return {
