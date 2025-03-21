@@ -260,9 +260,10 @@ class AIController(http.Controller):
             if not chat.exists() or chat.user_id.id != request.env.user.id:
                 return {'success': False, 'error': 'Chat not found or access denied'}
             
-            # Get message content and model
+            # Get message content, model, and query mode
             message_content = params.get('message', '')
             model = params.get('model', None)  # Optional model override
+            query_mode = params.get('query_mode', 'auto')  # 'auto', 'business', 'general'
             
             if not message_content:
                 return {'success': False, 'error': 'Message content is required'}
@@ -278,14 +279,30 @@ class AIController(http.Controller):
             chat.last_message_date = user_message.create_date
             
             # Get AI response directly from chat model
-            response = chat.send_message(message_content, model)
+            response = chat.send_message(message_content, model, query_mode=query_mode)
             
             if 'error' in response:
                 return {'success': False, 'error': response['error']}
             
+            # Cek apakah chat telah diperbarui (nama baru)
+            chat_updated = False
+            chat_data = None
+
+             # Bandingkan waktu modifikasi chat dengan waktu pembuatan pesan
+            if user_message.create_date and chat.write_date > user_message.create_date:
+                chat_updated = True
+                chat_data = {
+                    'id': chat.id,
+                    'name': chat.name,
+                    'topic': chat.topic,
+                }
+            
             # Pastikan response yang dikembalikan memiliki struktur yang benar
             # Jika response sudah berisi 'response', gunakan langsung
             if 'response' in response:
+                response['chat_updated'] = chat_updated
+                if chat_updated:
+                    response['chat'] = chat_data
                 return response
             
             # Jika response tidak memiliki 'response' tetapi memiliki 'content', konversi formatnya
