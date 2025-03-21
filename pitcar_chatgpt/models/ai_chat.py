@@ -180,6 +180,13 @@ class AIChat(models.Model):
     total_tokens = fields.Integer('Total Tokens Used', compute='_compute_token_usage', store=True)
     total_messages = fields.Integer('Total Messages', compute='_compute_message_stats', store=True)
     avg_response_time = fields.Float('Avg Response Time (sec)', compute='_compute_response_time', store=True)
+
+    category = fields.Selection([
+        ('general', 'General'),
+        ('business', 'Business'),
+        ('support', 'Support'),
+    ], string='Category', default='general', tracking=True)
+
     
     # Status and system information
     state = fields.Selection([
