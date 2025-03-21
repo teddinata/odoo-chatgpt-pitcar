@@ -11,7 +11,7 @@ class AIController(http.Controller):
     def ai_chat_operations(self, **kwargs):
         """Main endpoint for all AI chat operations"""
         try:
-            # Coba dapatkan operasi dari kwargs dulu
+            # Coba dapatkan operasi dari kwargs dulu (parameter yang dikirim langsung ke method)
             operation = kwargs.get('operation')
             params = kwargs.get('params', {})
             
@@ -20,10 +20,17 @@ class AIController(http.Controller):
                 operation = request.jsonrequest.get('operation')
                 params = request.jsonrequest.get('params', {})
             
-            # Jika masih tidak ada, coba dari request.params
+            # Jika masih tidak ada, coba dari request.params untuk HTTP requests
             if not operation:
                 operation = request.params.get('operation')
                 params = request.params.get('params', {})
+                
+                # Jika params masih string JSON, parse
+                if isinstance(params, str):
+                    try:
+                        params = json.loads(params)
+                    except:
+                        params = {}
             
             if not operation:
                 return {'success': False, 'error': 'Operation not specified'}
@@ -90,7 +97,21 @@ class AIController(http.Controller):
     def _create_chat(self, params):
         """Create a new chat session"""
         try:
-            name = params.get('name', f"Chat {request.env['ai.chat']._get_default_name()}")
+            # Dapatkan nama default jika tidak ada di params
+            name = params.get('name')
+            
+            # Jika tidak ada nama yang diberikan, buat nama default
+            if not name:
+                # Metode 1: Gunakan tanggal dan waktu saat ini
+                from datetime import datetime
+                name = f"Chat {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                
+                # Metode 2: Jika fungsi _get_default_name memang seharusnya ada
+                # try:
+                #     name = f"Chat {request.env['ai.chat']._get_default_name()}"
+                # except AttributeError:
+                #     name = f"Chat {datetime.now().strftime('%Y-%m-%d')}"
+            
             category = params.get('category', 'general')
             
             # Create a new chat session
