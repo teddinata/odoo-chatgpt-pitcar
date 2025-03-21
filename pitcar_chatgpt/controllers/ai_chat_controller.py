@@ -11,8 +11,19 @@ class AIController(http.Controller):
     def ai_chat_operations(self, **kwargs):
         """Main endpoint for all AI chat operations"""
         try:
-            operation = request.jsonrequest.get('operation')
-            params = request.jsonrequest.get('params', {})
+            # Coba dapatkan operasi dari kwargs dulu
+            operation = kwargs.get('operation')
+            params = kwargs.get('params', {})
+            
+            # Jika tidak ada, coba dari request.jsonrequest jika tersedia
+            if not operation and hasattr(request, 'jsonrequest'):
+                operation = request.jsonrequest.get('operation')
+                params = request.jsonrequest.get('params', {})
+            
+            # Jika masih tidak ada, coba dari request.params
+            if not operation:
+                operation = request.params.get('operation')
+                params = request.params.get('params', {})
             
             if not operation:
                 return {'success': False, 'error': 'Operation not specified'}
