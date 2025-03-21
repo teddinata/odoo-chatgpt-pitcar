@@ -882,3 +882,19 @@ Overdue Invoices:
         # Default to this month
         start_of_month = today.replace(day=1)
         return start_of_month, today
+    
+class AIService(models.AbstractModel):
+    _name = 'ai.service'
+    _description = 'AI Service'
+    
+    def get_ai_response(self, chat, message, model=None, business_context=None):
+        """
+        Mendapatkan respons dari AI untuk pesan yang diberikan
+        """
+        try:
+            # Gunakan metode send_message yang sudah ada di model ai.chat
+            return chat.send_message(message, model)
+            
+        except Exception as e:
+            _logger.error(f"Error getting AI response: {str(e)}")
+            return {'error': str(e)}
