@@ -977,7 +977,7 @@ class AIChat(models.Model):
         is_first_message = len(self.message_ids) <= 1
         
         try:
-             # Deteksi jenis pertanyaan
+            # Deteksi jenis pertanyaan
             is_business_query = self._is_business_query(content)
             if query_mode == 'auto':
                 is_business_query = self._is_business_query(content)
@@ -989,7 +989,7 @@ class AIChat(models.Model):
             if is_business_query:
                 # Tambahkan pengecekan untuk pertanyaan tentang karyawan
                 if any(k in content.lower() for k in ['karyawan', 'absensi', 'service advisor', 'mechanic', 'mekanik']):
-                    context_data = self._gather_employee_data(content)
+                    context_data = self._get_employees_data(content)  # Replace with existing method
                 else:
                     context_data = self._gather_relevant_data(content)
             

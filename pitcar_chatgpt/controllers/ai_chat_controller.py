@@ -247,65 +247,54 @@ class AIController(http.Controller):
             return {'success': False, 'error': str(e)}
     
     def _send_message(self, params):
-        """Send a message to the chat and get AI response"""
+        """Mengirim pesan ke obrolan dan mendapatkan respons AI"""
         try:
             chat_id = params.get('chat_id')
             if not chat_id:
-                return {'success': False, 'error': 'Chat ID required'}
-                
-            # Get the chat
+                return {'success': False, 'error': 'ID obrolan diperlukan'}
+
+            # Ambil obrolan
             chat = request.env['ai.chat'].sudo().browse(chat_id)
-            
-            # Check if chat exists and belongs to the user
+
+            # Periksa apakah obrolan ada dan milik pengguna
             if not chat.exists() or chat.user_id.id != request.env.user.id:
-                return {'success': False, 'error': 'Chat not found or access denied'}
-            
-            # Get message content, model, and query mode
+                return {'success': False, 'error': 'Obrolan tidak ditemukan atau akses ditolak'}
+
+            # Ambil konten pesan, model, dan mode kueri
             message_content = params.get('message', '')
-            model = params.get('model', None)  # Optional model override
+            model = params.get('model', None)  # Model opsional
             query_mode = params.get('query_mode', 'auto')  # 'auto', 'business', 'general'
-            
+
             if not message_content:
-                return {'success': False, 'error': 'Message content is required'}
-            
-            # Create user message
-            user_message = request.env['ai.chat.message'].sudo().create({
-                'chat_id': chat.id,
-                'content': message_content,
-                'message_type': 'user',
-            })
-            
-            # Update chat's last message date
-            chat.last_message_date = user_message.create_date
-            
-            # Get AI response directly from chat model
+                return {'success': False, 'error': 'Konten pesan diperlukan'}
+
+            # Langsung panggil metode send_message di model tanpa membuat pesan di sini
             response = chat.send_message(message_content, model, query_mode=query_mode)
-            
+
             if 'error' in response:
                 return {'success': False, 'error': response['error']}
-            
-            # Cek apakah chat telah diperbarui (nama baru)
+
+            # Cek apakah obrolan telah diperbarui (misalnya, nama baru)
             chat_updated = False
             chat_data = None
 
-             # Bandingkan waktu modifikasi chat dengan waktu pembuatan pesan
-            if user_message.create_date and chat.write_date > user_message.create_date:
+            # Jika ada pembaruan pada obrolan setelah pesan dikirim
+            if chat.write_date and chat.write_date > chat.last_message_date:
                 chat_updated = True
                 chat_data = {
                     'id': chat.id,
                     'name': chat.name,
                     'topic': chat.topic,
                 }
-            
-            # Pastikan response yang dikembalikan memiliki struktur yang benar
-            # Jika response sudah berisi 'response', gunakan langsung
+
+            # Pastikan respons memiliki struktur yang benar
             if 'response' in response:
                 response['chat_updated'] = chat_updated
                 if chat_updated:
                     response['chat'] = chat_data
                 return response
-            
-            # Jika response tidak memiliki 'response' tetapi memiliki 'content', konversi formatnya
+
+            # Jika respons tidak memiliki 'response' tetapi memiliki 'content', sesuaikan formatnya
             if 'content' in response:
                 return {
                     'success': True,
@@ -317,12 +306,12 @@ class AIController(http.Controller):
                         'message_id': response.get('message_uuid', '')
                     }
                 }
-                
-            # Jika struktur tidak dikenali, kembalikan error
-            return {'success': False, 'error': 'Invalid response format from AI model'}
-            
+
+            # Jika struktur tidak dikenali
+            return {'success': False, 'error': 'Format respons dari model AI tidak valid'}
+
         except Exception as e:
-            _logger.error(f"Error sending message: {str(e)}", exc_info=True)
+            _logger.error(f"Error saat mengirim pesan: {str(e)}", exc_info=True)
             return {'success': False, 'error': str(e)}
     
     def _get_ai_settings(self, params):
