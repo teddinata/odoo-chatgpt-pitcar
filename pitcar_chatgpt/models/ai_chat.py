@@ -1078,6 +1078,16 @@ class AIChat(models.Model):
             
             return {'error': str(e)}
         
+    def _update_chat_name_from_first_message(self, content):
+        """Memperbarui nama chat berdasarkan pesan pertama"""
+        try:
+            # Ambil 30 karakter pertama dari pesan sebagai nama awal
+            new_name = content[:30].strip()
+            if new_name:
+                self.write({'name': new_name})
+        except Exception as e:
+            _logger.error(f"Error saat memperbarui nama chat: {str(e)}")
+        
     def _update_chat_name(self, user_message, ai_response):
         """Create a descriptive chat name from first interaction"""
         try:
