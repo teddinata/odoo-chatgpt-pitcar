@@ -1,5 +1,6 @@
 from odoo import models, fields, api, _, exceptions, tools
 from odoo.exceptions import ValidationError, AccessError, UserError
+from odoo.modules.registry import Registry as registry
 from openai import OpenAI
 import logging
 import json
@@ -2598,102 +2599,114 @@ class AIChat(models.Model):
             return f"Error saat menganalisis efisiensi workflow: {str(e)}"
         
     def _get_rfm_analysis(self, message):
-        """Basic RFM (Recency, Frequency, Monetary) analysis for customers"""
+        """Get RFM analysis with safe transaction handling"""
         try:
-            today = fields.Date.today()
-            six_months_ago = today - timedelta(days=180)
+            # Buat cursor baru yang terpisah
+            registry_obj = registry(self.env.cr.dbname)
+            new_cr = registry_obj.cursor()
             
-            # Get all orders in the last 6 months
-            orders = self.env['sale.order'].sudo().search([
-                ('date_order', '>=', six_months_ago),
-                ('date_order', '<=', today),
-                ('state', 'in', ['sale', 'done'])
-            ])
-            
-            if not orders:
-                return "No order data available for RFM analysis in the last 6 months."
-            
-            # Collect customer data
-            customer_data = {}
-            for order in orders:
-                customer_id = order.partner_id.id
-                order_date = order.date_order.date()
+            try:
+                # Buat environment baru dengan cursor terpisah
+                env = api.Environment(new_cr, self.env.uid, self.env.context)
                 
-                if customer_id not in customer_data:
-                    customer_data[customer_id] = {
-                        'name': order.partner_id.name,
-                        'orders': [],
-                        'total_value': 0,
-                        'last_order': None
-                    }
+                # Periode untuk analisis RFM (6 bulan)
+                today = fields.Date.today()
+                six_months_ago = today - timedelta(days=180)
                 
-                customer_data[customer_id]['orders'].append(order)
-                customer_data[customer_id]['total_value'] += order.amount_total
+                # Ambil semua order dalam 6 bulan terakhir
+                orders = env['sale.order'].sudo().search([
+                    ('date_order', '>=', six_months_ago),
+                    ('date_order', '<=', today),
+                    ('state', 'in', ['sale', 'done'])
+                ])
                 
-                # Track most recent order
-                if not customer_data[customer_id]['last_order'] or order_date > customer_data[customer_id]['last_order']:
-                    customer_data[customer_id]['last_order'] = order_date
-            
-            # Calculate RFM metrics
-            for customer_id, data in customer_data.items():
-                # Recency: days since last order
-                data['recency'] = (today - data['last_order']).days
-                # Frequency: number of orders
-                data['frequency'] = len(data['orders'])
-                # Monetary: average order value
-                data['monetary'] = data['total_value'] / data['frequency'] if data['frequency'] > 0 else 0
-            
-            # Create segments
-            champions = []
-            at_risk = []
-            loyal = []
-            new_customers = []
-            
-            for customer_id, data in customer_data.items():
-                # Champions: High value, high frequency, recent orders
-                if data['recency'] < 30 and data['frequency'] >= 3 and data['monetary'] > 1000:
-                    champions.append(data)
-                # At Risk: Not ordered recently, but previously valuable
-                elif data['recency'] > 60 and data['frequency'] >= 3 and data['monetary'] > 1000:
-                    at_risk.append(data)
-                # Loyal: Regular customers
-                elif data['frequency'] >= 3:
-                    loyal.append(data)
-                # New: Recent first or second purchase
-                elif data['recency'] < 30 and data['frequency'] <= 2:
-                    new_customers.append(data)
-            
-            # Format output
-            result = "RFM Customer Analysis (Last 6 Months):\n\n"
-            
-            result += f"Total Customers: {len(customer_data)}\n"
-            result += f"Total Orders: {len(orders)}\n"
-            result += f"Total Revenue: {sum(data['total_value'] for data in customer_data.values()):.2f}\n\n"
-            
-            result += "Customer Segments:\n"
-            result += f"- Champions: {len(champions)} customers\n"
-            result += f"- At Risk: {len(at_risk)} customers\n"
-            result += f"- Loyal: {len(loyal)} customers\n"
-            result += f"- New Customers: {len(new_customers)} customers\n\n"
-            
-            # Top 5 Champions by value
-            if champions:
-                result += "Top Champions (Most Valuable Customers):\n"
-                for i, data in enumerate(sorted(champions, key=lambda x: x['total_value'], reverse=True)[:5], 1):
-                    result += f"{i}. {data['name']}: {data['frequency']} orders, {data['total_value']:.2f} total, {data['monetary']:.2f} avg\n"
-            
-            # Top 5 At Risk
-            if at_risk:
-                result += "\nAt Risk Customers (Need Attention):\n"
-                for i, data in enumerate(sorted(at_risk, key=lambda x: x['total_value'], reverse=True)[:5], 1):
-                    days_ago = data['recency']
-                    result += f"{i}. {data['name']}: Last order {days_ago} days ago, {data['frequency']} orders, {data['total_value']:.2f} total\n"
-            
-            return result
-            
+                # Jika tidak ada order, berikan pesan sederhana
+                if not orders:
+                    return "Tidak ada data order dalam 6 bulan terakhir untuk analisis RFM."
+                
+                # Kumpulkan data pelanggan
+                customer_data = {}
+                for order in orders:
+                    customer_id = order.partner_id.id
+                    order_date = order.date_order.date()
+                    
+                    if customer_id not in customer_data:
+                        customer_data[customer_id] = {
+                            'name': order.partner_id.name,
+                            'last_order': order_date,
+                            'frequency': 0,
+                            'monetary': 0
+                        }
+                    else:
+                        # Update last order jika lebih baru
+                        if order_date > customer_data[customer_id]['last_order']:
+                            customer_data[customer_id]['last_order'] = order_date
+                    
+                    # Update frequency dan monetary
+                    customer_data[customer_id]['frequency'] += 1
+                    customer_data[customer_id]['monetary'] += order.amount_total
+                
+                # Hitung recency
+                for customer_id, data in customer_data.items():
+                    data['recency'] = (today - data['last_order']).days
+                
+                # Identifikasi segmen
+                champions = []
+                at_risk = []
+                loyal = []
+                
+                for customer_id, data in customer_data.items():
+                    # Champions: baru transaksi, sering, nilai tinggi
+                    if data['recency'] < 30 and data['frequency'] >= 3 and data['monetary'] > 1000000:
+                        champions.append(data)
+                    # At Risk: lama tidak transaksi, pernah sering, nilai tinggi
+                    elif data['recency'] > 60 and data['frequency'] >= 3 and data['monetary'] > 1000000:
+                        at_risk.append(data)
+                    # Loyal: pelanggan regular
+                    elif data['frequency'] >= 3:
+                        loyal.append(data)
+                
+                # Format output
+                result = "Analisis RFM Pelanggan (6 Bulan Terakhir):\n\n"
+                
+                result += f"Total Pelanggan: {len(customer_data)}\n"
+                result += f"Total Orders: {len(orders)}\n"
+                result += f"Total Revenue: {sum(data['monetary'] for data in customer_data.values()):,.0f}\n\n"
+                
+                result += "Segmentasi Pelanggan:\n"
+                result += f"- Champions: {len(champions)} pelanggan\n"
+                result += f"- At Risk: {len(at_risk)} pelanggan\n"
+                result += f"- Loyal: {len(loyal)} pelanggan\n"
+                result += f"- Lainnya: {len(customer_data) - len(champions) - len(at_risk) - len(loyal)} pelanggan\n\n"
+                
+                # Top champions
+                if champions:
+                    result += "Top Champions (Pelanggan Paling Berharga):\n"
+                    for i, data in enumerate(sorted(champions, key=lambda x: x['monetary'], reverse=True)[:5], 1):
+                        result += f"{i}. {data['name']}: {data['frequency']} order, {data['monetary']:,.0f} total, {data['recency']} hari sejak order terakhir\n"
+                
+                # Top at risk
+                if at_risk:
+                    result += "\nAt Risk (Pelanggan yang Perlu Diperhatikan):\n"
+                    for i, data in enumerate(sorted(at_risk, key=lambda x: x['monetary'], reverse=True)[:5], 1):
+                        result += f"{i}. {data['name']}: {data['frequency']} order, {data['monetary']:,.0f} total, {data['recency']} hari sejak order terakhir\n"
+                
+                # Commit transaksi terpisah
+                new_cr.commit()
+                
+                return result
+            except Exception as e:
+                # Rollback transaksi terpisah jika terjadi error
+                new_cr.rollback()
+                _logger.error(f"Error in _get_rfm_analysis: {str(e)}")
+                return f"Error mendapatkan analisis RFM: {str(e)}"
+            finally:
+                # Selalu tutup cursor terpisah
+                new_cr.close()
+                
         except Exception as e:
-            _logger.error(f"Error performing RFM analysis: {str(e)}")
-            return f"Error analyzing customer segments: {str(e)}"
+            _logger.error(f"Critical error in _get_rfm_analysis: {str(e)}")
+            return "Tidak dapat melakukan analisis RFM karena error sistem."
 
     def _get_customer_data(self, message):
         """Get customer data analysis based on the user's message"""
@@ -3681,6 +3694,26 @@ When answering questions:
                         result.append(category_data)
                 except Exception as e:
                     _logger.error(f"Error gathering {category} data: {str(e)}")
+
+        # Cek untuk data inventaris
+        if any(k in message_lower for k in ['inventory', 'stock', 'inventaris', 'stok', 'persediaan']):
+            try:
+                inventory_data = self._get_inventory_data(message)
+                if inventory_data:
+                    result.append(inventory_data)
+            except Exception as e:
+                _logger.error(f"Error getting inventory data: {str(e)}")
+                result.append("Error retrieving inventory data.")
+        
+        # Cek untuk data RFM
+        if any(k in message_lower for k in ['rfm', 'recency', 'frequency', 'monetary', 'segmentasi pelanggan', 'customer segment']):
+            try:
+                rfm_data = self._get_rfm_analysis(message)
+                if rfm_data:
+                    result.append(rfm_data)
+            except Exception as e:
+                _logger.error(f"Error getting RFM data: {str(e)}")
+                result.append("Error retrieving customer segmentation data.")
         
         # Cek untuk data HR dan attendance
         if any(k in message_lower for k in ['karyawan', 'employee', 'absensi', 'attendance', 'hadir', 'pegawai', 'staff', 'hr', 'sdm']):
@@ -3990,79 +4023,83 @@ Top Customers:
         return result
     
     def _get_inventory_data(self, message):
-        """Get inventory data based on the user's message"""
+        """Get inventory data with safe transaction handling"""
         try:
-            # Get products with low stock
-            low_stock_domain = [
-                ('type', '=', 'product'),
-                ('qty_available', '<', 10),
-                ('company_id', '=', self.company_id.id)
-            ]
+            # Buat cursor baru yang terpisah untuk mengisolasi operasi database
+            registry_obj = registry(self.env.cr.dbname)
+            new_cr = registry_obj.cursor()
             
-            low_stock_products = self.env['product.product'].sudo().search(low_stock_domain, limit=10)
-            
-            # Get products with highest stock value
-            all_products = self.env['product.product'].sudo().search([
-                ('type', '=', 'product'),
-                ('company_id', '=', self.company_id.id)
-            ])
-            
-            stock_values = [(p, p.qty_available * p.standard_price) for p in all_products]
-            top_value_products = sorted(stock_values, key=lambda x: x[1], reverse=True)[:5]
-            
-            # Get recent stock moves
-            today = fields.Date.today()
-            one_month_ago = today - timedelta(days=30)
-            
-            recent_moves = self.env['stock.move'].sudo().search([
-                ('company_id', '=', self.company_id.id),
-                ('date', '>=', one_month_ago),
-                ('state', '=', 'done')
-            ], order='date desc', limit=5)
-            
-            # Format data
-            result = f"""
-Inventory Data (as of {today}):
-
-Products with Low Stock (less than 10 units):
-    """
-            if low_stock_products:
-                for i, product in enumerate(low_stock_products, 1):
-                    result += f"{i}. {product.name}: {product.qty_available} {product.uom_id.name}\n"
-            else:
-                result += "No products with low stock found.\n"
-            
-            result += "\nProducts with Highest Stock Value:"
-            if top_value_products:
-                for i, (product, value) in enumerate(top_value_products, 1):
-                    result += f"\n{i}. {product.name}: {product.qty_available} {product.uom_id.name}, Value: {value:.2f}"
-            else:
-                result += "\nNo products found."
-            
-            result += "\n\nRecent Stock Movements:"
-            if recent_moves:
-                for move in recent_moves:
-                    result += f"\n- {move.date.strftime('%Y-%m-%d')}: {move.product_id.name}, {move.product_uom_qty} {move.product_uom.name}, {move.location_id.name} → {move.location_dest_id.name}"
-            else:
-                result += "\nNo recent stock movements found."
-            
-            # Add reorder suggestions
-            reorder_products = self.env['product.product'].sudo().search([
-                ('type', '=', 'product'),
-                ('qty_available', '<', 5),
-                ('company_id', '=', self.company_id.id)
-            ], limit=5)
-            
-            if reorder_products:
-                result += "\n\nReorder Suggestions:"
-                for i, product in enumerate(reorder_products, 1):
-                    result += f"\n{i}. {product.name}: Current: {product.qty_available}, Suggested Order: {max(10 - product.qty_available, 5)}"
-            
-            return result
+            try:
+                # Buat environment baru dengan cursor terpisah
+                env = api.Environment(new_cr, self.env.uid, self.env.context)
+                
+                # Query produk dengan stok rendah
+                low_stock_products = env['product.product'].sudo().search([
+                    ('type', '=', 'product'),
+                    ('qty_available', '<', 10)
+                ], limit=10)
+                
+                # Query produk dengan wajib ready stock yang di bawah minimum
+                mandatory_products = env['product.template'].sudo().search([
+                    ('is_mandatory_stock', '=', True),
+                    ('is_below_mandatory_level', '=', True)
+                ], limit=10)
+                
+                # Query produk dengan umur persediaan tertinggi
+                aged_products = env['product.template'].sudo().search([
+                    ('inventory_age_category', 'in', ['old', 'very_old']),
+                    ('qty_available', '>', 0)
+                ], order='inventory_age_days desc', limit=10)
+                
+                # Format output
+                result = "Data Inventaris:\n\n"
+                
+                # Produk dengan stok rendah
+                result += "Produk dengan Stok Rendah (kurang dari 10 unit):\n"
+                if low_stock_products:
+                    for i, product in enumerate(low_stock_products, 1):
+                        result += f"{i}. {product.name}: {product.qty_available} unit\n"
+                else:
+                    result += "Tidak ditemukan produk dengan stok rendah.\n"
+                
+                # Produk wajib ready stock yang di bawah minimum
+                result += "\nProduk Wajib Ready Stock yang Perlu Diisi:\n"
+                if mandatory_products:
+                    for i, product in enumerate(mandatory_products, 1):
+                        result += f"{i}. {product.name}: {product.qty_available} unit (minimum: {product.min_mandatory_stock})\n"
+                else:
+                    result += "Tidak ada produk wajib ready stock yang di bawah minimum.\n"
+                
+                # Produk dengan umur persediaan tertinggi
+                result += "\nProduk dengan Umur Persediaan Tertinggi:\n"
+                if aged_products:
+                    for i, product in enumerate(aged_products, 1):
+                        result += f"{i}. {product.name}: {product.inventory_age} ({product.inventory_age_days} hari)\n"
+                else:
+                    result += "Tidak ditemukan produk dengan umur persediaan tinggi.\n"
+                
+                # Saran pemesanan ulang
+                result += "\nSaran Pemesanan Ulang:\n"
+                for product in low_stock_products:
+                    reorder_qty = max(10 - product.qty_available, 5)
+                    result += f"- {product.name}: Pesan {reorder_qty} unit\n"
+                
+                # Commit transaksi terpisah (tidak mempengaruhi transaksi utama)
+                new_cr.commit()
+                
+                return result
+            except Exception as e:
+                # Rollback cursor terpisah jika terjadi error
+                new_cr.rollback()
+                _logger.error(f"Error in _get_inventory_data: {str(e)}")
+                return f"Error mendapatkan data inventaris: {str(e)}"
+            finally:
+                # Selalu tutup cursor terpisah
+                new_cr.close()
                 
         except Exception as e:
-            _logger.error(f"Error getting inventory data: {str(e)}")
-            return f"Error retrieving inventory data: {str(e)}"
+            _logger.error(f"Critical error in _get_inventory_data: {str(e)}")
+            return "Tidak dapat mengakses data inventaris karena error sistem."
     
     def _get_finance_data(self, message):
         """Get finance data based on the user's message with improved historical comparison"""
