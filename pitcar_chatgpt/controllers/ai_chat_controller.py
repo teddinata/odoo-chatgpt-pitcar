@@ -60,19 +60,27 @@ class AIController(http.Controller):
             return {'success': False, 'error': str(e)}
     
     def _get_chat_list(self, params):
-        """Get all active chats for the current user"""
+        """Get chats for the current user, with option to include archived"""
         try:
-            # Get all active chats for the user
-            chats = request.env['ai.chat'].sudo().search([
-                ('user_id', '=', request.env.user.id),
-                ('active', '=', True)
-            ], order='last_message_date desc')
+            # Set default parameters
+            include_archived = params.get('include_archived', False) if params else False
+            
+            # Build domain
+            domain = [('user_id', '=', request.env.user.id)]
+            
+            # Filter active status only if not including archived
+            if not include_archived:
+                domain.append(('active', '=', True))
+            
+            # Get chats based on domain
+            chats = request.env['ai.chat'].sudo().search(domain, order='last_message_date desc')
             
             result = []
             for chat in chats:
                 # Get the last message
                 last_message = chat.message_ids.sorted('create_date', reverse=True)[:1]
                 
+                # Include state and active status in response
                 result.append({
                     'id': chat.id,
                     'name': chat.name,
@@ -83,6 +91,9 @@ class AIController(http.Controller):
                     'total_tokens': chat.total_tokens,
                     'topic': chat.topic or 'New Chat',
                     'summary': chat.summary or None,
+                    'state': chat.state,  # Add state field
+                    'active': chat.active,  # Add active field
+                    'category': 'business' if 'business' in chat.name.lower() else 'general'  # Add category
                 })
             
             return {

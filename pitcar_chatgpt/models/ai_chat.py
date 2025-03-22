@@ -894,6 +894,19 @@ class AIChat(models.Model):
             # Analisis periode waktu dari pesan
             time_period = self._extract_time_period(message)
             date_from, date_to = self._get_date_range(time_period)
+
+            # Validasi tanggal
+            today = fields.Date.today()
+            if date_from > today or date_to > today:
+                # Log warning untuk tanggal future
+                _logger.warning(f"Future date requested in comprehensive data: {date_from} to {date_to}")
+                # Optional: Ganti dengan tanggal yang valid dan beri tahu user
+                message_note = "\n(Catatan: Analisis untuk tanggal future diganti dengan data periode terakhir yang tersedia)\n"
+                
+                # Atur ulang tanggal ke periode bulan lalu
+                last_month_end = today.replace(day=1) - timedelta(days=1)
+                last_month_start = last_month_end.replace(day=1)
+                date_from, date_to = last_month_start, last_month_end
             
             result = f"\nLAPORAN KOMPREHENSIF BISNIS ({date_from.strftime('%Y-%m-%d')} hingga {date_to.strftime('%Y-%m-%d')})\n"
             result += "=" * 80 + "\n\n"
@@ -4513,6 +4526,20 @@ Keuntungan:
             if period_type == 'specific_month':
                 year = time_period.get('year')
                 month = time_period.get('month')
+                
+                # TAMBAHKAN KODE VALIDASI DI SINI
+                # Validasi tanggal masa depan
+                current_date = fields.Date.today()
+                if datetime(year, month, 1).date() > current_date:
+                    # Gunakan bulan saat ini jika tanggal di masa depan
+                    year_now = current_date.year
+                    month_now = current_date.month
+                    start_date = datetime(year_now, month_now, 1).date()
+                    if month_now == 12:
+                        end_month = datetime(year_now+1, 1, 1).date() - timedelta(days=1)
+                    else:
+                        end_month = datetime(year_now, month_now+1, 1).date() - timedelta(days=1)
+                    return start_date, end_month
                 
                 start_date = datetime(year, month, 1).date()
                 
