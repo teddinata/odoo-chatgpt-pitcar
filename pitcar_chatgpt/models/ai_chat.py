@@ -2598,202 +2598,102 @@ class AIChat(models.Model):
             return f"Error saat menganalisis efisiensi workflow: {str(e)}"
         
     def _get_rfm_analysis(self, message):
-        """Analyze customer data using RFM (Recency, Frequency, Monetary) method"""
+        """Basic RFM (Recency, Frequency, Monetary) analysis for customers"""
         try:
-            # Validasi bahwa ini adalah query RFM
-            rfm_keywords = ['rfm', 'recency', 'frequency', 'monetary', 'segmentasi', 'segmentation', 'customer', 'pelanggan']
-            message_lower = message.lower()
-            
-            if not any(keyword in message_lower for keyword in rfm_keywords):
-                return None
-                
-            # Tentukan rentang waktu analisis
             today = fields.Date.today()
-            analysis_period = 12  # Default: 12 bulan
+            six_months_ago = today - timedelta(days=180)
             
-            # Jika disebutkan dalam pesan, gunakan nilai yang disebutkan
-            for i in range(1, 37):  # Support hingga 3 tahun
-                if f"{i} bulan" in message_lower or f"{i} month" in message_lower:
-                    analysis_period = i
-                    break
+            # Get all orders in the last 6 months
+            orders = self.env['sale.order'].sudo().search([
+                ('date_order', '>=', six_months_ago),
+                ('date_order', '<=', today),
+                ('state', 'in', ['sale', 'done'])
+            ])
             
-            start_date = today - timedelta(days=30*analysis_period)
+            if not orders:
+                return "No order data available for RFM analysis in the last 6 months."
             
-            # Query untuk mendapatkan data RFM
-            rfm_query = """
-                WITH customer_data AS (
-                    SELECT
-                        so.partner_id,
-                        MAX(so.date_order) as last_order_date,
-                        COUNT(so.id) as order_count,
-                        SUM(so.amount_total) as total_spending
-                    FROM
-                        sale_order so
-                    WHERE
-                        so.date_order >= %s AND
-                        so.date_order <= %s AND
-                        so.state in ('sale', 'done') AND
-                        so.partner_id IS NOT NULL
-                    GROUP BY
-                        so.partner_id
-                ),
-                rfm_scores AS (
-                    SELECT
-                        cd.partner_id,
-                        NTILE(5) OVER (ORDER BY cd.last_order_date DESC) as recency_score,
-                        NTILE(5) OVER (ORDER BY cd.order_count ASC) as frequency_score,
-                        NTILE(5) OVER (ORDER BY cd.total_spending ASC) as monetary_score
-                    FROM
-                        customer_data cd
-                ),
-                rfm_segments AS (
-                    SELECT
-                        rs.partner_id,
-                        6-rs.recency_score as r_score,  -- Invert so 5 is best (most recent)
-                        rs.frequency_score as f_score,
-                        rs.monetary_score as m_score,
-                        (6-rs.recency_score) * 100 + rs.frequency_score * 10 + rs.monetary_score as rfm_combined
-                    FROM
-                        rfm_scores rs
-                )
-                SELECT
-                    p.id as partner_id,
-                    p.name as partner_name,
-                    rs.r_score,
-                    rs.f_score,
-                    rs.m_score,
-                    rs.rfm_combined,
-                    CASE
-                        WHEN rs.r_score >= 4 AND rs.f_score >= 4 AND rs.m_score >= 4 THEN 'Champions'
-                        WHEN rs.r_score >= 2 AND rs.f_score >= 3 AND rs.m_score >= 3 THEN 'Loyal Customers'
-                        WHEN rs.r_score >= 3 AND rs.f_score >= 1 AND rs.m_score >= 1 THEN 'Potential Loyalist'
-                        WHEN rs.r_score >= 4 AND rs.f_score <= 1 AND rs.m_score <= 1 THEN 'New Customers'
-                        WHEN rs.r_score >= 3 AND rs.f_score <= 2 AND rs.m_score <= 2 THEN 'Promising'
-                        WHEN rs.r_score >= 2 AND rs.f_score <= 2 AND rs.m_score <= 2 THEN 'Customers Needing Attention'
-                        WHEN rs.r_score <= 2 AND rs.f_score >= 2 AND rs.m_score >= 2 THEN 'At Risk'
-                        WHEN rs.r_score <= 1 AND rs.f_score >= 4 AND rs.m_score >= 4 THEN 'Can\'t Lose Them'
-                        WHEN rs.r_score <= 2 AND rs.f_score >= 2 AND rs.m_score <= 2 THEN 'Hibernating'
-                        WHEN rs.r_score <= 1 AND rs.f_score <= 2 AND rs.m_score <= 2 THEN 'Lost'
-                        ELSE 'Others'
-                    END as segment
-                FROM
-                    rfm_segments rs
-                JOIN
-                    res_partner p ON rs.partner_id = p.id
-                ORDER BY
-                    rs.rfm_combined DESC
-            """
+            # Collect customer data
+            customer_data = {}
+            for order in orders:
+                customer_id = order.partner_id.id
+                order_date = order.date_order.date()
+                
+                if customer_id not in customer_data:
+                    customer_data[customer_id] = {
+                        'name': order.partner_id.name,
+                        'orders': [],
+                        'total_value': 0,
+                        'last_order': None
+                    }
+                
+                customer_data[customer_id]['orders'].append(order)
+                customer_data[customer_id]['total_value'] += order.amount_total
+                
+                # Track most recent order
+                if not customer_data[customer_id]['last_order'] or order_date > customer_data[customer_id]['last_order']:
+                    customer_data[customer_id]['last_order'] = order_date
             
-            self.env.cr.execute(rfm_query, (start_date, today))
-            rfm_data = self.env.cr.dictfetchall()
+            # Calculate RFM metrics
+            for customer_id, data in customer_data.items():
+                # Recency: days since last order
+                data['recency'] = (today - data['last_order']).days
+                # Frequency: number of orders
+                data['frequency'] = len(data['orders'])
+                # Monetary: average order value
+                data['monetary'] = data['total_value'] / data['frequency'] if data['frequency'] > 0 else 0
             
-            if not rfm_data:
-                return f"Tidak ditemukan data pelanggan yang cukup untuk analisis RFM dalam {analysis_period} bulan terakhir."
+            # Create segments
+            champions = []
+            at_risk = []
+            loyal = []
+            new_customers = []
             
-            # Kelompokkan berdasarkan segment
-            segments = {}
-            for data in rfm_data:
-                segment = data['segment']
-                if segment not in segments:
-                    segments[segment] = []
-                segments[segment].append(data)
+            for customer_id, data in customer_data.items():
+                # Champions: High value, high frequency, recent orders
+                if data['recency'] < 30 and data['frequency'] >= 3 and data['monetary'] > 1000:
+                    champions.append(data)
+                # At Risk: Not ordered recently, but previously valuable
+                elif data['recency'] > 60 and data['frequency'] >= 3 and data['monetary'] > 1000:
+                    at_risk.append(data)
+                # Loyal: Regular customers
+                elif data['frequency'] >= 3:
+                    loyal.append(data)
+                # New: Recent first or second purchase
+                elif data['recency'] < 30 and data['frequency'] <= 2:
+                    new_customers.append(data)
             
             # Format output
-            result = f"\n\nAnalisis RFM (Recency, Frequency, Monetary) - {analysis_period} Bulan Terakhir:\n\n"
+            result = "RFM Customer Analysis (Last 6 Months):\n\n"
             
-            # Penjelasan sederhana RFM
-            result += "Penjelasan Skor RFM:\n"
-            result += "- R (Recency): 5 = Baru saja order, 1 = Sudah lama tidak order\n"
-            result += "- F (Frequency): 5 = Sering order, 1 = Jarang order\n"
-            result += "- M (Monetary): 5 = Nilai order tinggi, 1 = Nilai order rendah\n\n"
+            result += f"Total Customers: {len(customer_data)}\n"
+            result += f"Total Orders: {len(orders)}\n"
+            result += f"Total Revenue: {sum(data['total_value'] for data in customer_data.values()):.2f}\n\n"
             
-            # Distribusi segmen
-            result += "Distribusi Segmen Pelanggan:\n"
-            for segment, customers in sorted(segments.items(), key=lambda x: len(x[1]), reverse=True):
-                count = len(customers)
-                percentage = (count / len(rfm_data)) * 100
-                result += f"- {segment}: {count} pelanggan ({percentage:.2f}%)\n"
+            result += "Customer Segments:\n"
+            result += f"- Champions: {len(champions)} customers\n"
+            result += f"- At Risk: {len(at_risk)} customers\n"
+            result += f"- Loyal: {len(loyal)} customers\n"
+            result += f"- New Customers: {len(new_customers)} customers\n\n"
             
-            # Detail segmen beserta rekomendasi
-            result += "\nAnalisis Segmen & Rekomendasi Strategi:\n"
+            # Top 5 Champions by value
+            if champions:
+                result += "Top Champions (Most Valuable Customers):\n"
+                for i, data in enumerate(sorted(champions, key=lambda x: x['total_value'], reverse=True)[:5], 1):
+                    result += f"{i}. {data['name']}: {data['frequency']} orders, {data['total_value']:.2f} total, {data['monetary']:.2f} avg\n"
             
-            # Champions
-            if 'Champions' in segments:
-                champion_count = len(segments['Champions'])
-                result += f"1. Champions ({champion_count} pelanggan):\n"
-                result += "   - Karakteristik: Pelanggan loyal dengan nilai dan frekuensi tinggi, baru saja bertransaksi\n"
-                result += "   - Rekomendasi: Pertahankan dengan program rewards, jadikan brand ambassador, minta referensi\n"
-            
-            # Loyal Customers
-            if 'Loyal Customers' in segments:
-                loyal_count = len(segments['Loyal Customers'])
-                result += f"2. Loyal Customers ({loyal_count} pelanggan):\n"
-                result += "   - Karakteristik: Pelanggan setia dengan frekuensi dan nilai transaksi yang baik\n"
-                result += "   - Rekomendasi: Program loyalitas, special offers, upsell ke layanan premium\n"
-            
-            # At Risk
-            if 'At Risk' in segments:
-                at_risk_count = len(segments['At Risk'])
-                result += f"3. At Risk ({at_risk_count} pelanggan):\n"
-                result += "   - Karakteristik: Pelanggan bernilai tinggi yang sudah lama tidak bertransaksi\n"
-                result += "   - Rekomendasi: Reactivation campaign, reminder service, special offers\n"
-            
-            # New Customers
-            if 'New Customers' in segments:
-                new_count = len(segments['New Customers'])
-                result += f"4. New Customers ({new_count} pelanggan):\n"
-                result += "   - Karakteristik: Pelanggan baru dengan transaksi terbaru namun frekuensi rendah\n"
-                result += "   - Rekomendasi: Welcome program, edukasi tentang layanan lain, follow-up kepuasan\n"
-            
-            # Can't Lose Them
-            if 'Can\'t Lose Them' in segments:
-                cant_lose_count = len(segments['Can\'t Lose Them'])
-                result += f"5. Can't Lose Them ({cant_lose_count} pelanggan):\n"
-                result += "   - Karakteristik: Pelanggan high-value yang sudah lama tidak bertransaksi\n"
-                result += "   - Rekomendasi: Win-back campaign, personal outreach, survey kepuasan\n"
-            
-            # Lost
-            if 'Lost' in segments:
-                lost_count = len(segments['Lost'])
-                result += f"6. Lost ({lost_count} pelanggan):\n"
-                result += "   - Karakteristik: Pelanggan yang sudah lama tidak bertransaksi dengan nilai rendah\n"
-                result += "   - Rekomendasi: Reactivation dengan penawaran khusus atau membiarkan secara natural\n"
-            
-            # Top 5 customers overall
-            top_customers = sorted(rfm_data, key=lambda x: x['rfm_combined'], reverse=True)[:5]
-            
-            if top_customers:
-                result += "\nTop 5 Pelanggan Berdasarkan Skor RFM:\n"
-                for i, customer in enumerate(top_customers, 1):
-                    result += f"{i}. {customer['partner_name']}\n"
-                    result += f"   - Skor RFM: {customer['r_score']}-{customer['f_score']}-{customer['m_score']}\n"
-                    result += f"   - Segmen: {customer['segment']}\n"
-            
-            # Overall strategy recommendations
-            result += "\nRekomendasi Strategi Keseluruhan:\n"
-            
-            # Count segment distribution
-            champion_loyal_pct = sum(len(segments.get(s, [])) for s in ['Champions', 'Loyal Customers']) / len(rfm_data) * 100
-            at_risk_pct = sum(len(segments.get(s, [])) for s in ['At Risk', 'Can\'t Lose Them', 'Hibernating']) / len(rfm_data) * 100
-            new_potential_pct = sum(len(segments.get(s, [])) for s in ['New Customers', 'Potential Loyalist', 'Promising']) / len(rfm_data) * 100
-            
-            if champion_loyal_pct < 30:
-                result += "1. Fokus pada program retensi pelanggan untuk meningkatkan persentase Champion & Loyal Customers.\n"
-            
-            if at_risk_pct > 25:
-                result += "2. Implementasikan win-back campaign untuk segmen At Risk yang memiliki persentase tinggi.\n"
-            
-            if new_potential_pct > 40:
-                result += "3. Maksimalkan konversi pelanggan baru menjadi loyal dengan program follow-up konsisten.\n"
-            
-            result += "4. Implementasikan program engagement berbeda untuk setiap segmen RFM.\n"
-            result += "5. Lakukan evaluasi RFM secara berkala (3-6 bulan sekali) untuk memantau pergeseran segmen.\n"
+            # Top 5 At Risk
+            if at_risk:
+                result += "\nAt Risk Customers (Need Attention):\n"
+                for i, data in enumerate(sorted(at_risk, key=lambda x: x['total_value'], reverse=True)[:5], 1):
+                    days_ago = data['recency']
+                    result += f"{i}. {data['name']}: Last order {days_ago} days ago, {data['frequency']} orders, {data['total_value']:.2f} total\n"
             
             return result
             
         except Exception as e:
-            _logger.error(f"Error in RFM analysis: {str(e)}")
-            return f"Error saat melakukan analisis RFM: {str(e)}"
+            _logger.error(f"Error performing RFM analysis: {str(e)}")
+            return f"Error analyzing customer segments: {str(e)}"
 
     def _get_customer_data(self, message):
         """Get customer data analysis based on the user's message"""
@@ -3457,64 +3357,74 @@ class AIChat(models.Model):
     def send_message(self, content, model=None, query_mode='auto'):
         """Send a message in this chat and get AI response"""
         self.ensure_one()
-        
-        if not content.strip():
-            return {'error': 'Message cannot be empty'}
-        
-        # Check user access to this chat
-        if self.user_id.id != self.env.user.id:
-            return {'error': 'You do not have access to this chat'}
-        
-        # Get system settings
-        api_key = self.env['ir.config_parameter'].sudo().get_param('openai.api_key')
-        if not api_key:
-            return {'error': 'OpenAI API key not configured'}
-            
-        # Get user settings
-        user_settings = self.env['ai.user.settings'].get_user_settings()
-        
-        # Determine which model to use
-        model_to_use = model or user_settings.default_model
-        
-        # If GPT-4 is requested, check daily limit
-        if model_to_use.startswith('gpt-4'):
-            if not user_settings.check_gpt4_limit():
-                # If user has reached their limit, fallback or return error
-                if user_settings.fallback_to_gpt35:
-                    model_to_use = 'gpt-3.5-turbo'
-                else:
-                    return {
-                        'error': f'You have reached your daily limit of {user_settings.daily_gpt4_limit} GPT-4 requests',
-                        'remaining_tokens': 0
-                    }
-        
-        # Create user message
-        message_time = fields.Datetime.now()
-        user_message = self.env['ai.chat.message'].create({
-            'chat_id': self.id,
-            'message_type': 'user',
-            'content': content,
-            'create_date': message_time,
-        })
-
-        is_first_message = len(self.message_ids) <= 1
+        cr = self.env.cr
         
         try:
+            if not content.strip():
+                return {'success': False, 'error': 'Message cannot be empty'}
+            
+            # Check user access to this chat
+            if self.user_id.id != self.env.user.id:
+                return {'success': False, 'error': 'You do not have access to this chat'}
+            
+            # Get system settings
+            api_key = self.env['ir.config_parameter'].sudo().get_param('openai.api_key')
+            if not api_key:
+                return {'success': False, 'error': 'OpenAI API key not configured'}
+                
+            # Get user settings
+            user_settings = self.env['ai.user.settings'].get_user_settings()
+            
+            # Determine which model to use
+            model_to_use = model or user_settings.default_model
+            
+            # If GPT-4 is requested, check daily limit
+            if model_to_use.startswith('gpt-4'):
+                if not user_settings.check_gpt4_limit():
+                    # If user has reached their limit, fallback or return error
+                    if user_settings.fallback_to_gpt35:
+                        model_to_use = 'gpt-3.5-turbo'
+                    else:
+                        return {
+                            'success': False,
+                            'error': f'You have reached your daily limit of {user_settings.daily_gpt4_limit} GPT-4 requests',
+                            'remaining_tokens': 0
+                        }
+            
+            # Create user message
+            message_time = fields.Datetime.now()
+            user_message = self.env['ai.chat.message'].create({
+                'chat_id': self.id,
+                'message_type': 'user',
+                'content': content,
+                'create_date': message_time,
+            })
+
+            is_first_message = len(self.message_ids) <= 1
+            
             # Deteksi jenis pertanyaan
-            is_business_query = self._is_business_query(content)
-            if query_mode == 'auto':
-                is_business_query = self._is_business_query(content)
-            elif query_mode == 'general':
+            is_business_query = False
+            try:
+                if query_mode == 'auto':
+                    is_business_query = self._is_business_query(content)
+                elif query_mode == 'business':
+                    is_business_query = True
+            except Exception as e:
+                _logger.error(f"Error detecting business query: {str(e)}")
                 is_business_query = False
             
             # Analyze message to gather relevant data from Odoo (hanya jika bisnis)
             context_data = None
             if is_business_query:
-                # Tambahkan pengecekan untuk pertanyaan tentang karyawan
-                if any(k in content.lower() for k in ['karyawan', 'absensi', 'service advisor', 'mechanic', 'mekanik']):
-                    context_data = self._get_employees_data(content)  # Replace with existing method
-                else:
-                    context_data = self._gather_relevant_data(content)
+                try:
+                    # Tambahkan pengecekan untuk pertanyaan tentang karyawan
+                    if any(k in content.lower() for k in ['karyawan', 'absensi', 'service advisor', 'mechanic', 'mekanik']):
+                        context_data = self._get_employees_data(content)
+                    else:
+                        context_data = self._gather_relevant_data(content)
+                except Exception as e:
+                    _logger.error(f"Error gathering business data: {str(e)}")
+                    context_data = "Error gathering business data: " + str(e)
             
             # Get system prompt
             system_prompt = self._get_system_prompt(user_settings, is_business_query)
@@ -3574,6 +3484,9 @@ class AIChat(models.Model):
                 # Jika ini pesan pertama, picu komputasi topic
                 self._update_chat_name_from_first_message(content)
             
+            # Commit the transaction
+            cr.commit()
+            
             # Return success with response data
             return {
                 'success': True,
@@ -3587,19 +3500,25 @@ class AIChat(models.Model):
             }
             
         except Exception as e:
-            _logger.error(f"OpenAI API Error: {str(e)}")
+            # Rollback the transaction
+            cr.rollback()
+            _logger.error(f"OpenAI API Error: {str(e)}", exc_info=True)
             
             # Create error message
-            error_msg = f"Sorry, I encountered an error while processing your request: {str(e)}"
-            self.env['ai.chat.message'].create({
-                'chat_id': self.id,
-                'message_type': 'system',
-                'content': error_msg,
-                'model_used': model_to_use,
-                'create_date': fields.Datetime.now(),
-            })
+            try:
+                error_msg = f"Sorry, I encountered an error while processing your request: {str(e)}"
+                error_message = self.env['ai.chat.message'].create({
+                    'chat_id': self.id,
+                    'message_type': 'system',
+                    'content': error_msg,
+                    'model_used': model_to_use if 'model_to_use' in locals() else None,
+                    'create_date': fields.Datetime.now(),
+                })
+                cr.commit()
+            except Exception as e2:
+                _logger.error(f"Error creating error message: {str(e2)}")
             
-            return {'error': str(e)}
+            return {'success': False, 'error': str(e)}
         
     def _update_chat_name_from_first_message(self, content):
         """Memperbarui nama chat berdasarkan pesan pertama"""
@@ -4072,61 +3991,78 @@ Top Customers:
     
     def _get_inventory_data(self, message):
         """Get inventory data based on the user's message"""
-        # Get products with low stock
-        low_stock_domain = [
-            ('type', '=', 'product'),
-            ('qty_available', '<', 10),
-            ('company_id', '=', self.company_id.id)
-        ]
-        
-        low_stock_products = self.env['product.product'].search(low_stock_domain, limit=10)
-        
-        # Get products with highest stock value
-        all_products = self.env['product.product'].search([
-            ('type', '=', 'product'),
-            ('company_id', '=', self.company_id.id)
-        ])
-        
-        stock_values = [(p, p.qty_available * p.standard_price) for p in all_products]
-        top_value_products = sorted(stock_values, key=lambda x: x[1], reverse=True)[:5]
-        
-        # Get recent stock moves
-        today = fields.Date.today()
-        one_month_ago = today - timedelta(days=30)
-        
-        recent_moves = self.env['stock.move'].search([
-            ('company_id', '=', self.company_id.id),
-            ('date', '>=', one_month_ago),
-            ('state', '=', 'done')
-        ], order='date desc', limit=5)
-        
-        # Format data
-        result = f"""
+        try:
+            # Get products with low stock
+            low_stock_domain = [
+                ('type', '=', 'product'),
+                ('qty_available', '<', 10),
+                ('company_id', '=', self.company_id.id)
+            ]
+            
+            low_stock_products = self.env['product.product'].sudo().search(low_stock_domain, limit=10)
+            
+            # Get products with highest stock value
+            all_products = self.env['product.product'].sudo().search([
+                ('type', '=', 'product'),
+                ('company_id', '=', self.company_id.id)
+            ])
+            
+            stock_values = [(p, p.qty_available * p.standard_price) for p in all_products]
+            top_value_products = sorted(stock_values, key=lambda x: x[1], reverse=True)[:5]
+            
+            # Get recent stock moves
+            today = fields.Date.today()
+            one_month_ago = today - timedelta(days=30)
+            
+            recent_moves = self.env['stock.move'].sudo().search([
+                ('company_id', '=', self.company_id.id),
+                ('date', '>=', one_month_ago),
+                ('state', '=', 'done')
+            ], order='date desc', limit=5)
+            
+            # Format data
+            result = f"""
 Inventory Data (as of {today}):
 
 Products with Low Stock (less than 10 units):
-"""
-        if low_stock_products:
-            for i, product in enumerate(low_stock_products, 1):
-                result += f"{i}. {product.name}: {product.qty_available} {product.uom_id.name}\n"
-        else:
-            result += "No products with low stock found.\n"
-        
-        result += "\nProducts with Highest Stock Value:"
-        if top_value_products:
-            for i, (product, value) in enumerate(top_value_products, 1):
-                result += f"\n{i}. {product.name}: {product.qty_available} {product.uom_id.name}, Value: {value:.2f}"
-        else:
-            result += "\nNo products found."
-        
-        result += "\n\nRecent Stock Movements:"
-        if recent_moves:
-            for move in recent_moves:
-                result += f"\n- {move.date.strftime('%Y-%m-%d')}: {move.product_id.name}, {move.product_uom_qty} {move.product_uom.name}, {move.location_id.name} → {move.location_dest_id.name}"
-        else:
-            result += "\nNo recent stock movements found."
-        
-        return result
+    """
+            if low_stock_products:
+                for i, product in enumerate(low_stock_products, 1):
+                    result += f"{i}. {product.name}: {product.qty_available} {product.uom_id.name}\n"
+            else:
+                result += "No products with low stock found.\n"
+            
+            result += "\nProducts with Highest Stock Value:"
+            if top_value_products:
+                for i, (product, value) in enumerate(top_value_products, 1):
+                    result += f"\n{i}. {product.name}: {product.qty_available} {product.uom_id.name}, Value: {value:.2f}"
+            else:
+                result += "\nNo products found."
+            
+            result += "\n\nRecent Stock Movements:"
+            if recent_moves:
+                for move in recent_moves:
+                    result += f"\n- {move.date.strftime('%Y-%m-%d')}: {move.product_id.name}, {move.product_uom_qty} {move.product_uom.name}, {move.location_id.name} → {move.location_dest_id.name}"
+            else:
+                result += "\nNo recent stock movements found."
+            
+            # Add reorder suggestions
+            reorder_products = self.env['product.product'].sudo().search([
+                ('type', '=', 'product'),
+                ('qty_available', '<', 5),
+                ('company_id', '=', self.company_id.id)
+            ], limit=5)
+            
+            if reorder_products:
+                result += "\n\nReorder Suggestions:"
+                for i, product in enumerate(reorder_products, 1):
+                    result += f"\n{i}. {product.name}: Current: {product.qty_available}, Suggested Order: {max(10 - product.qty_available, 5)}"
+            
+            return result
+                
+        except Exception as e:
+            _logger.error(f"Error getting inventory data: {str(e)}")
+            return f"Error retrieving inventory data: {str(e)}"
     
     def _get_finance_data(self, message):
         """Get finance data based on the user's message with improved historical comparison"""

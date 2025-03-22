@@ -10,6 +10,7 @@ class AIController(http.Controller):
     @http.route('/web/ai/chat', type='json', auth='user')
     def ai_chat_operations(self, **kwargs):
         """Main endpoint for all AI chat operations"""
+        cr = request.env.cr
         try:
             # Coba dapatkan operasi dari kwargs dulu (parameter yang dikirim langsung ke method)
             operation = kwargs.get('operation')
@@ -53,10 +54,18 @@ class AIController(http.Controller):
                 return {'success': False, 'error': f'Unknown operation: {operation}'}
             
             # Call the appropriate method
-            return operations_map[operation](params)
+            result = operations_map[operation](params)
+            
+            # If operation was successful, commit the transaction
+            if result.get('success', False):
+                cr.commit()
+            
+            return result
             
         except Exception as e:
-            _logger.error(f"Error in AI chat operation: {str(e)}")
+            # Rollback the transaction if an error occurs
+            cr.rollback()
+            _logger.error(f"Error in AI chat operation: {str(e)}", exc_info=True)
             return {'success': False, 'error': str(e)}
     
     def _get_chat_list(self, params):
@@ -259,6 +268,7 @@ class AIController(http.Controller):
     
     def _send_message(self, params):
         """Mengirim pesan ke obrolan dan mendapatkan respons AI"""
+        cr = request.env.cr
         try:
             chat_id = params.get('chat_id')
             if not chat_id:
@@ -279,10 +289,12 @@ class AIController(http.Controller):
             if not message_content:
                 return {'success': False, 'error': 'Konten pesan diperlukan'}
 
-            # Langsung panggil metode send_message di model tanpa membuat pesan di sini
-            response = chat.send_message(message_content, model, query_mode=query_mode)
+            # Gunakan with_context untuk tidak melakukan commit di dalam send_message
+            response = chat.with_context(no_commit=True).send_message(message_content, model, query_mode=query_mode)
 
-            if 'error' in response:
+            # Mendeteksi format respons yang berbeda
+            if isinstance(response, dict) and 'error' in response:
+                cr.rollback()  # Rollback if error
                 return {'success': False, 'error': response['error']}
 
             # Cek apakah obrolan telah diperbarui (misalnya, nama baru)
@@ -290,7 +302,7 @@ class AIController(http.Controller):
             chat_data = None
 
             # Jika ada pembaruan pada obrolan setelah pesan dikirim
-            if chat.write_date and chat.write_date > chat.last_message_date:
+            if chat.write_date and chat.last_message_date and chat.write_date > chat.last_message_date:
                 chat_updated = True
                 chat_data = {
                     'id': chat.id,
@@ -299,14 +311,14 @@ class AIController(http.Controller):
                 }
 
             # Pastikan respons memiliki struktur yang benar
-            if 'response' in response:
+            if isinstance(response, dict) and 'response' in response:
                 response['chat_updated'] = chat_updated
                 if chat_updated:
                     response['chat'] = chat_data
                 return response
 
-            # Jika respons tidak memiliki 'response' tetapi memiliki 'content', sesuaikan formatnya
-            if 'content' in response:
+            # Jika respons tidak memiliki 'response' tetapi memiliki 'content'
+            if isinstance(response, dict) and 'content' in response:
                 return {
                     'success': True,
                     'response': {
@@ -318,10 +330,11 @@ class AIController(http.Controller):
                     }
                 }
 
-            # Jika struktur tidak dikenali
-            return {'success': False, 'error': 'Format respons dari model AI tidak valid'}
+            # Fallback untuk respons yang tidak sesuai format
+            return {'success': True, 'response': response if isinstance(response, dict) else {'content': str(response)}}
 
         except Exception as e:
+            cr.rollback()
             _logger.error(f"Error saat mengirim pesan: {str(e)}", exc_info=True)
             return {'success': False, 'error': str(e)}
     
