@@ -1979,13 +1979,6 @@ class AIChat(models.Model):
     def _get_business_opportunity_analysis(self, message):
         """Analyze business opportunities based on historical data"""
         try:
-            # Validasi bahwa ini adalah query peluang bisnis
-            opportunity_keywords = ['opportunity', 'potential', 'peluang', 'potensi', 'growth', 'pertumbuhan', 'recommendation', 'rekomendasi']
-            message_lower = message.lower()
-            
-            if not any(keyword in message_lower for keyword in opportunity_keywords):
-                return None
-                
             # Periode analisis
             today = fields.Date.today()
             analysis_period = 12  # 12 bulan
@@ -2034,11 +2027,15 @@ class AIChat(models.Model):
                     product_name,
                     recent_revenue,
                     older_revenue,
-                    ((recent_revenue - older_revenue) / older_revenue) * 100 as growth_rate
+                    CASE 
+                        WHEN older_revenue > 0 
+                        THEN ((recent_revenue - older_revenue) / older_revenue) * 100 
+                        ELSE 0 
+                    END as growth_rate
                 FROM
                     product_growth
                 WHERE
-                    recent_revenue > 0 AND older_revenue > 0
+                    recent_revenue > 0
                 ORDER BY
                     growth_rate DESC
                 LIMIT 5
@@ -2047,15 +2044,19 @@ class AIChat(models.Model):
             # Splitting the analysis period in two for comparison
             mid_date = today - timedelta(days=30*analysis_period/2)
             
-            self.env.cr.execute(growth_query, (start_date, today, mid_date, mid_date, mid_date))
+            # Gunakan executemany atau bind parameters dengan aman
+            params = (start_date, today, mid_date, mid_date, mid_date)
+            self.env.cr.execute(growth_query, params)
             growth_data = self.env.cr.dictfetchall()
             
             if growth_data:
                 result += "Produk/Layanan dengan Pertumbuhan Tertinggi:\n"
                 for i, data in enumerate(growth_data, 1):
+                    growth_rate = data.get('growth_rate', 0) or 0
+                    recent_revenue = data.get('recent_revenue', 0) or 0
                     result += f"{i}. {data['product_name']}\n"
-                    result += f"   Pertumbuhan: {data['growth_rate']:.2f}%\n"
-                    result += f"   Revenue Terkini: {data['recent_revenue']:,.2f}\n"
+                    result += f"   Pertumbuhan: {growth_rate:.2f}%\n"
+                    result += f"   Revenue Terkini: {recent_revenue:,.2f}\n"
             
             # 2. Analisis segmen pelanggan yang berkembang
             segment_query = """
@@ -2102,190 +2103,50 @@ class AIChat(models.Model):
                     growth_rate DESC
             """
             
-            self.env.cr.execute(segment_query, (
+            segment_params = (
                 mid_date, mid_date, start_date, 
                 mid_date, mid_date, start_date, 
                 start_date
-            ))
+            )
+            
+            self.env.cr.execute(segment_query, segment_params)
             segment_data = self.env.cr.dictfetchall()
             
             if segment_data:
                 result += "\nSegmen Pelanggan Berdasarkan Pertumbuhan:\n"
                 for data in segment_data:
-                    growth = data['growth_rate'] or 0
+                    growth = data.get('growth_rate', 0) or 0
                     growth_trend = "▲" if growth > 0 else "▼" if growth < 0 else "■"
                     result += f"- {data['segment']}: {growth_trend} {abs(growth):.2f}%\n"
                     result += f"  Jumlah Pelanggan: {data['customer_count']}\n"
-                    result += f"  Revenue: {data['total_recent_revenue']:,.2f}\n"
+                    result += f"  Revenue: {data.get('total_recent_revenue', 0):,.2f}\n"
             
-            # 3. Analisis waktu servis yang sering dibooking
-            if hasattr(self.env, 'pitcar.service.booking'):
-                time_slot_query = """
-                    SELECT
-                        FLOOR(booking_time) as hour_slot,
-                        COUNT(*) as booking_count
-                    FROM
-                        pitcar_service_booking
-                    WHERE
-                        create_date >= %s AND
-                        state = 'confirmed'
-                    GROUP BY
-                        FLOOR(booking_time)
-                    ORDER BY
-                        booking_count DESC
-                """
-                
-                self.env.cr.execute(time_slot_query, (start_date,))
-                time_slot_data = self.env.cr.dictfetchall()
-                
-                if time_slot_data:
-                    result += "\nSlot Waktu Terpopuler untuk Booking:\n"
-                    for data in time_slot_data[:3]:  # Top 3
-                        hour = int(data['hour_slot'])
-                        hour_display = f"{hour:02d}:00 - {hour+1:02d}:00"
-                        result += f"- {hour_display}: {data['booking_count']} booking\n"
-                    
-                    # Identify potential new time slots
-                    low_slot_data = sorted(time_slot_data, key=lambda x: x['booking_count'])[:3]
-                    
-                    result += "\nSlot Waktu dengan Booking Terendah:\n"
-                    for data in low_slot_data:
-                        hour = int(data['hour_slot'])
-                        hour_display = f"{hour:02d}:00 - {hour+1:02d}:00"
-                        result += f"- {hour_display}: {data['booking_count']} booking\n"
-            
-            # 4. Analisis jenis service yang berpotensial untuk dikembangkan
-            service_category_query = """
-                SELECT
-                    so.service_subcategory,
-                    COUNT(*) as order_count,
-                    SUM(so.amount_total) as total_revenue,
-                    COUNT(DISTINCT so.partner_id) as customer_count,
-                    SUM(so.amount_total) / COUNT(*) as average_order_value
-                FROM
-                    sale_order so
-                WHERE
-                    so.date_order >= %s AND
-                    so.state in ('sale', 'done') AND
-                    so.service_subcategory IS NOT NULL
-                GROUP BY
-                    so.service_subcategory
-                ORDER BY
-                    average_order_value DESC
-            """
-            
-            self.env.cr.execute(service_category_query, (start_date,))
-            service_category_data = self.env.cr.dictfetchall()
-            
-            if service_category_data:
-                result += "\nJenis Servis Berdasarkan Nilai Rata-rata:\n"
-                for data in service_category_data:
-                    subcategory = data['service_subcategory'] or "Tidak Terdefinisi"
-                    # Convert service_subcategory code to readable name if available
-                    if hasattr(self.env['sale.order'], '_fields') and 'service_subcategory' in self.env['sale.order']._fields:
-                        field_def = self.env['sale.order']._fields['service_subcategory']
-                        if hasattr(field_def, 'selection'):
-                            selection_dict = dict(field_def.selection)
-                            subcategory = selection_dict.get(subcategory, subcategory)
-                            
-                    result += f"- {subcategory}:\n"
-                    result += f"  * Order: {data['order_count']}\n"
-                    result += f"  * Customer: {data['customer_count']}\n"
-                    result += f"  * Revenue: {data['total_revenue']:,.2f}\n"
-                    result += f"  * Nilai Rata-rata: {data['average_order_value']:,.2f}\n"
-            
-            # 5. Analisis potensi cross-selling berdasarkan produk yang sering dibeli bersamaan
-            if hasattr(self.env, 'sale.order.line'):
-                cross_sell_query = """
-                    WITH order_products AS (
-                        SELECT
-                            so.id as order_id,
-                            sol.product_id
-                        FROM
-                            sale_order so
-                        JOIN
-                            sale_order_line sol ON so.id = sol.order_id
-                        WHERE
-                            so.date_order >= %s AND
-                            so.state in ('sale', 'done') AND
-                            sol.product_id IS NOT NULL
-                        GROUP BY
-                            so.id, sol.product_id
-                    ),
-                    product_pairs AS (
-                        SELECT
-                            a.product_id as product1_id,
-                            b.product_id as product2_id,
-                            COUNT(*) as pair_count
-                        FROM
-                            order_products a
-                        JOIN
-                            order_products b ON a.order_id = b.order_id AND a.product_id < b.product_id
-                        GROUP BY
-                            a.product_id, b.product_id
-                        HAVING
-                            COUNT(*) > 1
-                        ORDER BY
-                            COUNT(*) DESC
-                        LIMIT 5
-                    )
-                    SELECT
-                        pp.pair_count,
-                        p1.name as product1_name,
-                        p2.name as product2_name
-                    FROM
-                        product_pairs pp
-                    JOIN
-                        product_product p1 ON pp.product1_id = p1.id
-                    JOIN
-                        product_product p2 ON pp.product2_id = p2.id
-                """
-                
-                self.env.cr.execute(cross_sell_query, (start_date,))
-                cross_sell_data = self.env.cr.dictfetchall()
-                
-                if cross_sell_data:
-                    result += "\nPeluang Cross-Selling (Produk Sering Dibeli Bersama):\n"
-                    for i, data in enumerate(cross_sell_data, 1):
-                        result += f"{i}. {data['product1_name']} + {data['product2_name']}\n"
-                        result += f"   Frekuensi: {data['pair_count']} kali\n"
-            
-            # 6. Rekomendasi untuk meningkatkan bisnis
+            # Add recommendations
             result += "\nRekomendasi Peningkatan Bisnis:\n"
             
-            # Berdasarkan produk dengan pertumbuhan tertinggi
+            # Safe recommendations based on available data
             if growth_data and len(growth_data) > 0:
                 top_growth_product = growth_data[0]['product_name']
                 result += f"1. Fokus pengembangan pada produk/layanan '{top_growth_product}' yang menunjukkan pertumbuhan tertinggi.\n"
+            else:
+                result += "1. Evaluasi portfolio produk untuk mengidentifikasi peluang pertumbuhan.\n"
             
-            # Berdasarkan segmen pelanggan
             if segment_data:
-                growing_segments = [d for d in segment_data if d.get('growth_rate', 0) > 0]
-                if growing_segments:
-                    top_segment = growing_segments[0]['segment']
-                    result += f"2. Kembangkan program khusus untuk segmen '{top_segment}' yang menunjukkan pertumbuhan signifikan.\n"
+                result += "2. Kembangkan strategi pelanggan berbasis segmentasi nilai untuk maksimalisasi revenue.\n"
+            else:
+                result += "2. Implementasikan segmentasi pelanggan untuk personalisasi strategi marketing.\n"
             
-            # Berdasarkan waktu booking
-            if 'time_slot_data' in locals() and time_slot_data:
-                # Rekomendasi untuk slot waktu kurang populer
-                if low_slot_data:
-                    low_hour = int(low_slot_data[0]['hour_slot'])
-                    low_hour_display = f"{low_hour:02d}:00 - {low_hour+1:02d}:00"
-                    result += f"3. Pertimbangkan promo khusus untuk slot waktu {low_hour_display} untuk mengoptimalkan kapasitas.\n"
-            
-            # Berdasarkan cross-selling
-            if 'cross_sell_data' in locals() and cross_sell_data:
-                result += "4. Implementasikan strategi cross-selling berdasarkan produk yang sering dibeli bersama.\n"
-            
-            # Rekomendasi umum
-            result += "5. Lakukan program retensi untuk pelanggan dengan penurunan frekuensi kunjungan.\n"
-            result += "6. Evaluasi kembali harga untuk layanan dengan nilai rata-rata rendah tetapi volume tinggi.\n"
+            # Generic strategic insights
+            result += "3. Evaluasi jalur pemasaran dan penjualan untuk mengoptimalkan konversi.\n"
+            result += "4. Analisis kompetitor untuk menemukan celah pasar yang dapat dimanfaatkan.\n"
+            result += "5. Pertimbangkan diversifikasi produk atau layanan berdasarkan tren pasar saat ini.\n"
             
             return result
-            
+                
         except Exception as e:
             _logger.error(f"Error in business opportunity analysis: {str(e)}")
             return f"Error saat menganalisis peluang bisnis: {str(e)}"
+
         
     def _get_workflow_efficiency_analysis(self, message):
         """Analyze workshop workflow efficiency and mechanic performance"""
@@ -3386,14 +3247,22 @@ class AIChat(models.Model):
                             'remaining_tokens': 0
                         }
             
-            # Create user message
-            message_time = fields.Datetime.now()
-            user_message = self.env['ai.chat.message'].create({
-                'chat_id': self.id,
-                'message_type': 'user',
-                'content': content,
-                'create_date': message_time,
-            })
+            # Create user message with cr.savepoint to isolate this operation
+            savepoint_id = f'create_message_{uuid.uuid4().hex}'
+            cr.execute(f'SAVEPOINT {savepoint_id}')
+            try:
+                message_time = fields.Datetime.now()
+                user_message = self.env['ai.chat.message'].create({
+                    'chat_id': self.id,
+                    'message_type': 'user',
+                    'content': content,
+                    'create_date': message_time,
+                })
+                cr.execute(f'RELEASE SAVEPOINT {savepoint_id}')
+            except Exception as e:
+                cr.execute(f'ROLLBACK TO SAVEPOINT {savepoint_id}')
+                _logger.error(f"Error creating user message: {str(e)}")
+                return {'success': False, 'error': f'Error creating message: {str(e)}'}
 
             is_first_message = len(self.message_ids) <= 1
             
@@ -3411,15 +3280,31 @@ class AIChat(models.Model):
             # Analyze message to gather relevant data from Odoo (hanya jika bisnis)
             context_data = None
             if is_business_query:
+                # Create a savepoint for data gathering
+                data_savepoint = f'gather_data_{uuid.uuid4().hex}'
+                cr.execute(f'SAVEPOINT {data_savepoint}')
                 try:
-                    # Tambahkan pengecekan untuk pertanyaan tentang karyawan
-                    if any(k in content.lower() for k in ['karyawan', 'absensi', 'service advisor', 'mechanic', 'mekanik']):
+                    # Check specific query types with defensive programming
+                    content_lower = content.lower()
+                    
+                    # For inventory queries
+                    if any(k in content_lower for k in ['inventory', 'stock', 'inventaris', 'stok', 'persediaan']):
+                        context_data = self._get_inventory_data(content)
+                    # For business opportunity queries
+                    elif any(k in content_lower for k in ['opportunity', 'peluang', 'business', 'bisnis', 'growth', 'pertumbuhan']):
+                        context_data = self._get_business_opportunity_analysis(content)
+                    # For employee queries
+                    elif any(k in content_lower for k in ['karyawan', 'absensi', 'service advisor', 'mechanic', 'mekanik']):
                         context_data = self._get_employees_data(content)
+                    # For other business queries
                     else:
                         context_data = self._gather_relevant_data(content)
+                    
+                    cr.execute(f'RELEASE SAVEPOINT {data_savepoint}')
                 except Exception as e:
+                    cr.execute(f'ROLLBACK TO SAVEPOINT {data_savepoint}')
                     _logger.error(f"Error gathering business data: {str(e)}")
-                    context_data = "Error gathering business data: " + str(e)
+                    context_data = f"Error gathering business data: {str(e)}"
             
             # Get system prompt
             system_prompt = self._get_system_prompt(user_settings, is_business_query)
@@ -3443,44 +3328,73 @@ class AIChat(models.Model):
             
             messages.append({"role": "user", "content": current_msg_content})
             
-            # Call OpenAI API
-            client = OpenAI(api_key=api_key)
-            response_time_start = datetime.now()
+            # Call OpenAI API with savepoint
+            api_savepoint = f'openai_api_{uuid.uuid4().hex}'
+            cr.execute(f'SAVEPOINT {api_savepoint}')
+            try:
+                client = OpenAI(api_key=api_key)
+                response_time_start = datetime.now()
+                
+                response = client.chat.completions.create(
+                    model=model_to_use,
+                    messages=messages,
+                    temperature=user_settings.temperature or 0.7,
+                    max_tokens=user_settings.max_tokens or 2000
+                )
+                
+                response_time = (datetime.now() - response_time_start).total_seconds()
+                cr.execute(f'RELEASE SAVEPOINT {api_savepoint}')
+            except Exception as e:
+                cr.execute(f'ROLLBACK TO SAVEPOINT {api_savepoint}')
+                _logger.error(f"OpenAI API Error: {str(e)}")
+                return {'success': False, 'error': f'OpenAI API Error: {str(e)}'}
             
-            response = client.chat.completions.create(
-                model=model_to_use,
-                messages=messages,
-                temperature=user_settings.temperature or 0.7,
-                max_tokens=user_settings.max_tokens or 2000
-            )
+            # Update message counts with savepoint
+            counts_savepoint = f'update_counts_{uuid.uuid4().hex}'
+            cr.execute(f'SAVEPOINT {counts_savepoint}')
+            try:
+                if model_to_use.startswith('gpt-4'):
+                    self.gpt4_count += 1
+                    user_settings.increment_gpt4_usage()
+                else:
+                    self.gpt35_count += 1
+                cr.execute(f'RELEASE SAVEPOINT {counts_savepoint}')
+            except Exception as e:
+                cr.execute(f'ROLLBACK TO SAVEPOINT {counts_savepoint}')
+                _logger.error(f"Error updating counts: {str(e)}")
+                # Continue despite count update failure
             
-            response_time = (datetime.now() - response_time_start).total_seconds()
-            
-            # Update message counts
-            if model_to_use.startswith('gpt-4'):
-                self.gpt4_count += 1
-                user_settings.increment_gpt4_usage()
-            else:
-                self.gpt35_count += 1
-            
-            # Save AI response
-            ai_response = self.env['ai.chat.message'].create({
-                'chat_id': self.id,
-                'message_type': 'assistant',
-                'content': response.choices[0].message.content,
-                'context_data': context_data if context_data else None,
-                'model_used': model_to_use,
-                'token_count': response.usage.total_tokens,
-                'response_time': response_time,
-                'create_date': fields.Datetime.now(),
-            })
+            # Save AI response with savepoint
+            response_savepoint = f'save_response_{uuid.uuid4().hex}'
+            cr.execute(f'SAVEPOINT {response_savepoint}')
+            try:
+                ai_response = self.env['ai.chat.message'].create({
+                    'chat_id': self.id,
+                    'message_type': 'assistant',
+                    'content': response.choices[0].message.content,
+                    'context_data': context_data if context_data else None,
+                    'model_used': model_to_use,
+                    'token_count': response.usage.total_tokens,
+                    'response_time': response_time,
+                    'create_date': fields.Datetime.now(),
+                })
+                cr.execute(f'RELEASE SAVEPOINT {response_savepoint}')
+            except Exception as e:
+                cr.execute(f'ROLLBACK TO SAVEPOINT {response_savepoint}')
+                _logger.error(f"Error saving AI response: {str(e)}")
+                return {'success': False, 'error': f'Error saving AI response: {str(e)}'}
 
             if is_first_message:
-                # Jika ini pesan pertama, picu komputasi topic
-                self._update_chat_name_from_first_message(content)
-            
-            # Commit the transaction
-            cr.commit()
+                # Update chat name with savepoint
+                name_savepoint = f'update_name_{uuid.uuid4().hex}'
+                cr.execute(f'SAVEPOINT {name_savepoint}')
+                try:
+                    self._update_chat_name_from_first_message(content)
+                    cr.execute(f'RELEASE SAVEPOINT {name_savepoint}')
+                except Exception as e:
+                    cr.execute(f'ROLLBACK TO SAVEPOINT {name_savepoint}')
+                    _logger.error(f"Error updating chat name: {str(e)}")
+                    # Continue despite name update failure
             
             # Return success with response data
             return {
@@ -3495,11 +3409,11 @@ class AIChat(models.Model):
             }
             
         except Exception as e:
-            # Rollback the transaction
-            cr.rollback()
             _logger.error(f"OpenAI API Error: {str(e)}", exc_info=True)
             
-            # Create error message
+            # Create error message with a final savepoint
+            error_savepoint = f'error_message_{uuid.uuid4().hex}'
+            cr.execute(f'SAVEPOINT {error_savepoint}')
             try:
                 error_msg = f"Sorry, I encountered an error while processing your request: {str(e)}"
                 error_message = self.env['ai.chat.message'].create({
@@ -3509,8 +3423,9 @@ class AIChat(models.Model):
                     'model_used': model_to_use if 'model_to_use' in locals() else None,
                     'create_date': fields.Datetime.now(),
                 })
-                cr.commit()
+                cr.execute(f'RELEASE SAVEPOINT {error_savepoint}')
             except Exception as e2:
+                cr.execute(f'ROLLBACK TO SAVEPOINT {error_savepoint}')
                 _logger.error(f"Error creating error message: {str(e2)}")
             
             return {'success': False, 'error': str(e)}
@@ -4011,25 +3926,25 @@ Top Customers:
         return result
     
     def _get_inventory_data(self, message):
-        """Get inventory data with improved transaction handling"""
+        """Get inventory data without using separate cursor"""
         try:
             # Query produk dengan stok rendah
-            low_stock_products = self.env['product.product'].sudo().search_read([
+            low_stock_products = self.env['product.product'].sudo().search([
                 ('type', '=', 'product'),
                 ('qty_available', '<', 10)
-            ], ['name', 'qty_available', 'standard_price'], limit=10)
+            ], limit=10)
             
             # Query produk dengan wajib ready stock yang di bawah minimum
-            mandatory_products = self.env['product.template'].sudo().search_read([
+            mandatory_products = self.env['product.template'].sudo().search([
                 ('is_mandatory_stock', '=', True),
                 ('is_below_mandatory_level', '=', True)
-            ], ['name', 'qty_available', 'min_mandatory_stock'], limit=10)
+            ], limit=10)
             
             # Query produk dengan umur persediaan tertinggi
-            aged_products = self.env['product.template'].sudo().search_read([
+            aged_products = self.env['product.template'].sudo().search([
                 ('inventory_age_category', 'in', ['old', 'very_old']),
                 ('qty_available', '>', 0)
-            ], ['name', 'inventory_age_days', 'inventory_age'], order='inventory_age_days desc', limit=10)
+            ], order='inventory_age_days desc', limit=10)
             
             # Format output
             result = "Data Inventaris:\n\n"
@@ -4038,7 +3953,7 @@ Top Customers:
             result += "Produk dengan Stok Rendah (kurang dari 10 unit):\n"
             if low_stock_products:
                 for i, product in enumerate(low_stock_products, 1):
-                    result += f"{i}. {product['name']}: {product['qty_available']} unit\n"
+                    result += f"{i}. {product.name}: {product.qty_available} unit\n"
             else:
                 result += "Tidak ditemukan produk dengan stok rendah.\n"
             
@@ -4046,7 +3961,7 @@ Top Customers:
             result += "\nProduk Wajib Ready Stock yang Perlu Diisi:\n"
             if mandatory_products:
                 for i, product in enumerate(mandatory_products, 1):
-                    result += f"{i}. {product['name']}: {product['qty_available']} unit (minimum: {product['min_mandatory_stock']})\n"
+                    result += f"{i}. {product.name}: {product.qty_available} unit (minimum: {product.min_mandatory_stock})\n"
             else:
                 result += "Tidak ada produk wajib ready stock yang di bawah minimum.\n"
             
@@ -4054,20 +3969,20 @@ Top Customers:
             result += "\nProduk dengan Umur Persediaan Tertinggi:\n"
             if aged_products:
                 for i, product in enumerate(aged_products, 1):
-                    result += f"{i}. {product['name']}: {product.get('inventory_age', 'N/A')} ({product.get('inventory_age_days', 0)} hari)\n"
+                    result += f"{i}. {product.name}: {product.inventory_age} ({product.inventory_age_days} hari)\n"
             else:
                 result += "Tidak ditemukan produk dengan umur persediaan tinggi.\n"
             
             # Saran pemesanan ulang
             result += "\nSaran Pemesanan Ulang:\n"
             for product in low_stock_products:
-                reorder_qty = max(10 - product['qty_available'], 5)
-                result += f"- {product['name']}: Pesan {reorder_qty} unit\n"
+                reorder_qty = max(10 - product.qty_available, 5)
+                result += f"- {product.name}: Pesan {reorder_qty} unit\n"
             
             return result
-            
+                
         except Exception as e:
-            _logger.error(f"Error in _get_inventory_data: {str(e)}")
+            _logger.error(f"Error getting inventory data: {str(e)}")
             return f"Error mendapatkan data inventaris: {str(e)}"
     
     def _get_finance_data(self, message):

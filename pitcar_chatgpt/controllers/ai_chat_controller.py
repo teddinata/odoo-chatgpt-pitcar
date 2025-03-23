@@ -2,6 +2,8 @@ from odoo import http
 from odoo.http import request
 import json
 import logging
+import uuid
+from datetime import datetime, timedelta, date
 
 _logger = logging.getLogger(__name__)
 
@@ -11,6 +13,11 @@ class AIController(http.Controller):
     def ai_chat_operations(self, **kwargs):
         """Main endpoint for all AI chat operations"""
         cr = request.env.cr
+        
+        # Create main savepoint for entire operation
+        main_savepoint = f'operation_{uuid.uuid4().hex}'
+        cr.execute(f'SAVEPOINT {main_savepoint}')
+        
         try:
             # Coba dapatkan operasi dari kwargs dulu (parameter yang dikirim langsung ke method)
             operation = kwargs.get('operation')
@@ -34,6 +41,7 @@ class AIController(http.Controller):
                         params = {}
             
             if not operation:
+                cr.execute(f'ROLLBACK TO SAVEPOINT {main_savepoint}')
                 return {'success': False, 'error': 'Operation not specified'}
             
             # Map operations to methods
@@ -51,6 +59,7 @@ class AIController(http.Controller):
             }
             
             if operation not in operations_map:
+                cr.execute(f'ROLLBACK TO SAVEPOINT {main_savepoint}')
                 return {'success': False, 'error': f'Unknown operation: {operation}'}
             
             # Call the appropriate method
@@ -58,13 +67,16 @@ class AIController(http.Controller):
             
             # If operation was successful, commit the transaction
             if result.get('success', False):
-                cr.commit()
+                cr.execute(f'RELEASE SAVEPOINT {main_savepoint}')
+            else:
+                # Rollback to savepoint if operation failed
+                cr.execute(f'ROLLBACK TO SAVEPOINT {main_savepoint}')
             
             return result
             
         except Exception as e:
             # Rollback the transaction if an error occurs
-            cr.rollback()
+            cr.execute(f'ROLLBACK TO SAVEPOINT {main_savepoint}')
             _logger.error(f"Error in AI chat operation: {str(e)}", exc_info=True)
             return {'success': False, 'error': str(e)}
     
@@ -269,9 +281,15 @@ class AIController(http.Controller):
     def _send_message(self, params):
         """Mengirim pesan ke obrolan dan mendapatkan respons AI"""
         cr = request.env.cr
+        
+        # Create main savepoint for entire operation
+        main_savepoint = 'send_message_main'
+        cr.execute(f'SAVEPOINT {main_savepoint}')
+        
         try:
             chat_id = params.get('chat_id')
             if not chat_id:
+                cr.execute(f'ROLLBACK TO SAVEPOINT {main_savepoint}')
                 return {'success': False, 'error': 'ID obrolan diperlukan'}
 
             # Ambil obrolan
@@ -279,6 +297,7 @@ class AIController(http.Controller):
 
             # Periksa apakah obrolan ada dan milik pengguna
             if not chat.exists() or chat.user_id.id != request.env.user.id:
+                cr.execute(f'ROLLBACK TO SAVEPOINT {main_savepoint}')
                 return {'success': False, 'error': 'Obrolan tidak ditemukan atau akses ditolak'}
 
             # Ambil konten pesan, model, dan mode kueri
@@ -287,14 +306,23 @@ class AIController(http.Controller):
             query_mode = params.get('query_mode', 'auto')  # 'auto', 'business', 'general'
 
             if not message_content:
+                cr.execute(f'ROLLBACK TO SAVEPOINT {main_savepoint}')
                 return {'success': False, 'error': 'Konten pesan diperlukan'}
 
-            # Gunakan with_context untuk tidak melakukan commit di dalam send_message
-            response = chat.with_context(no_commit=True).send_message(message_content, model, query_mode=query_mode)
+            # Send message with context to prevent auto-commit
+            try:
+                # Set flag to avoid nested transaction conflicts
+                response = chat.with_context(no_commit=True, no_new_cr=True).send_message(
+                    message_content, model, query_mode=query_mode
+                )
+            except Exception as e:
+                _logger.error(f"Error in send_message: {str(e)}", exc_info=True)
+                cr.execute(f'ROLLBACK TO SAVEPOINT {main_savepoint}')
+                return {'success': False, 'error': str(e)}
 
             # Mendeteksi format respons yang berbeda
             if isinstance(response, dict) and 'error' in response:
-                cr.rollback()  # Rollback if error
+                cr.execute(f'ROLLBACK TO SAVEPOINT {main_savepoint}')
                 return {'success': False, 'error': response['error']}
 
             # Cek apakah obrolan telah diperbarui (misalnya, nama baru)
@@ -309,6 +337,9 @@ class AIController(http.Controller):
                     'name': chat.name,
                     'topic': chat.topic,
                 }
+
+            # Commit the main savepoint as everything was successful
+            cr.execute(f'RELEASE SAVEPOINT {main_savepoint}')
 
             # Pastikan respons memiliki struktur yang benar
             if isinstance(response, dict) and 'response' in response:
@@ -334,7 +365,7 @@ class AIController(http.Controller):
             return {'success': True, 'response': response if isinstance(response, dict) else {'content': str(response)}}
 
         except Exception as e:
-            cr.rollback()
+            cr.execute(f'ROLLBACK TO SAVEPOINT {main_savepoint}')
             _logger.error(f"Error saat mengirim pesan: {str(e)}", exc_info=True)
             return {'success': False, 'error': str(e)}
     
