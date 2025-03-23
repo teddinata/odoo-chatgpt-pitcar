@@ -289,20 +289,12 @@ class AIController(http.Controller):
             if not message_content:
                 return {'success': False, 'error': 'Konten pesan diperlukan'}
 
-            # Gunakan savepoint untuk isolasi operasi send_message
-            savepoint_name = f"send_message_{chat.id}"
-            try:
-                cr.execute('SAVEPOINT %s' % savepoint_name)
-                # Gunakan with_context untuk tidak melakukan commit di dalam send_message
-                response = chat.with_context(no_commit=True).send_message(message_content, model, query_mode=query_mode)
-                cr.execute('RELEASE SAVEPOINT %s' % savepoint_name)
-            except Exception as e:
-                cr.execute('ROLLBACK TO SAVEPOINT %s' % savepoint_name)
-                _logger.error(f"Error in send_message: {str(e)}", exc_info=True)
-                return {'success': False, 'error': str(e)}
+            # Gunakan with_context untuk tidak melakukan commit di dalam send_message
+            response = chat.with_context(no_commit=True).send_message(message_content, model, query_mode=query_mode)
 
             # Mendeteksi format respons yang berbeda
             if isinstance(response, dict) and 'error' in response:
+                cr.rollback()  # Rollback if error
                 return {'success': False, 'error': response['error']}
 
             # Cek apakah obrolan telah diperbarui (misalnya, nama baru)
@@ -345,7 +337,6 @@ class AIController(http.Controller):
             cr.rollback()
             _logger.error(f"Error saat mengirim pesan: {str(e)}", exc_info=True)
             return {'success': False, 'error': str(e)}
-
     
     def _get_ai_settings(self, params):
         """Get AI settings for the current user"""
