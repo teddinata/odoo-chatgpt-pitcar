@@ -13,10 +13,7 @@ class AIController(http.Controller):
     def ai_chat_operations(self, **kwargs):
         """Main endpoint for all AI chat operations"""
         cr = request.env.cr
-        
-        # Create main savepoint for entire operation
-        main_savepoint = f'operation_{uuid.uuid4().hex}'
-        cr.execute(f'SAVEPOINT {main_savepoint}')
+        savepoint_name = None
         
         try:
             # Coba dapatkan operasi dari kwargs dulu (parameter yang dikirim langsung ke method)
@@ -41,13 +38,11 @@ class AIController(http.Controller):
                         params = {}
             
             if not operation:
-                cr.execute(f'ROLLBACK TO SAVEPOINT {main_savepoint}')
                 return {'success': False, 'error': 'Operation not specified'}
             
             # Map operations to methods
             operations_map = {
                 'get_chat_list': self._get_chat_list,
-                'get_archived_chats': self._get_archived_chats,
                 'create_chat': self._create_chat,
                 'archive_chat': self._archive_chat,
                 'restore_chat': self._restore_chat,
@@ -60,24 +55,42 @@ class AIController(http.Controller):
             }
             
             if operation not in operations_map:
-                cr.execute(f'ROLLBACK TO SAVEPOINT {main_savepoint}')
                 return {'success': False, 'error': f'Unknown operation: {operation}'}
+            
+            # Buat savepoint dengan nama yang aman
+            # Gunakan nama yang tidak berisi karakter khusus untuk menghindari error SQL
+            savepoint_name = 'sp_' + str(uuid.uuid4()).replace('-', '_')
+            
+            # Pastikan yang kita passing ke SQL query adalah identifier yang aman
+            cr.execute('SAVEPOINT "%s"' % savepoint_name)
+            _logger.debug(f"Created savepoint: {savepoint_name}")
             
             # Call the appropriate method
             result = operations_map[operation](params)
             
-            # If operation was successful, commit the transaction
+            # If operation was successful, release savepoint
             if result.get('success', False):
-                cr.execute(f'RELEASE SAVEPOINT {main_savepoint}')
+                cr.execute('RELEASE SAVEPOINT "%s"' % savepoint_name)
+                _logger.debug(f"Released savepoint: {savepoint_name}")
             else:
-                # Rollback to savepoint if operation failed
-                cr.execute(f'ROLLBACK TO SAVEPOINT {main_savepoint}')
+                # Rollback to savepoint if operation failed without exception
+                cr.execute('ROLLBACK TO SAVEPOINT "%s"' % savepoint_name)
+                _logger.debug(f"Rolled back to savepoint: {savepoint_name}")
             
             return result
             
         except Exception as e:
-            # Rollback the transaction if an error occurs
-            cr.execute(f'ROLLBACK TO SAVEPOINT {main_savepoint}')
+            # Jika savepoint dibuat, coba rollback ke savepoint
+            if savepoint_name:
+                try:
+                    _logger.debug(f"Attempting to rollback to savepoint {savepoint_name} after exception")
+                    cr.execute('ROLLBACK TO SAVEPOINT "%s"' % savepoint_name)
+                    _logger.debug(f"Successfully rolled back to savepoint: {savepoint_name}")
+                except Exception as e2:
+                    # Jika rollback ke savepoint gagal, catat error tetapi jangan raise exception baru
+                    _logger.error(f"Failed to rollback to savepoint {savepoint_name}: {str(e2)}")
+            
+            # Log error asli dan return error response
             _logger.error(f"Error in AI chat operation: {str(e)}", exc_info=True)
             return {'success': False, 'error': str(e)}
     
