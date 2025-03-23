@@ -43,6 +43,7 @@ class AIController(http.Controller):
             # Map operations to methods
             operations_map = {
                 'get_chat_list': self._get_chat_list,
+                'get_archived_chats': self._get_archived_chats,
                 'create_chat': self._create_chat,
                 'archive_chat': self._archive_chat,
                 'restore_chat': self._restore_chat,
