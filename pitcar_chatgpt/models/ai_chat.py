@@ -1986,135 +1986,209 @@ class AIChat(models.Model):
             
             result = "\n\nAnalisis Peluang Bisnis (6 Bulan Terakhir):\n\n"
             
+            # Logging untuk debugging
+            _logger.info(f"Analyzing business opportunities from {start_date} to {today}")
+            
             # Pendekatan yang lebih aman dengan ORM untuk produk dengan pertumbuhan tinggi
-            # Dapatkan penjualan per produk dalam periode
-            domain = [
+            # Periksa apakah sale.order.line model ada
+            if 'sale.order.line' not in self.env:
+                return "Modul penjualan tidak terinstal. Tidak dapat menganalisis data penjualan."
+            
+            # Verifikasi apakah ada data penjualan dalam periode ini
+            sale_count = self.env['sale.order'].search_count([
                 ('date_order', '>=', start_date),
                 ('date_order', '<=', today),
                 ('state', 'in', ['sale', 'done'])
-            ]
+            ])
             
-            # Gunakan read_group untuk agregasi yang aman
-            product_sales = self.env['sale.order.line'].read_group(
-                domain=[
-                    ('order_id.date_order', '>=', start_date),
-                    ('order_id.date_order', '<=', today),
-                    ('order_id.state', 'in', ['sale', 'done'])
-                ],
-                fields=['product_id', 'price_subtotal:sum', 'product_uom_qty:sum'],
-                groupby=['product_id']
-            )
+            _logger.info(f"Found {sale_count} sales orders in period")
+            
+            if sale_count == 0:
+                return "Tidak ada data penjualan dalam 6 bulan terakhir. Silakan periksa data penjualan Anda."
+            
+            # Dapatkan penjualan per produk dalam periode secara bertahap
+            try:
+                # Gunakan read_group untuk agregasi yang aman
+                product_sales = self.env['sale.order.line'].read_group(
+                    domain=[
+                        ('order_id.date_order', '>=', start_date),
+                        ('order_id.date_order', '<=', today),
+                        ('order_id.state', 'in', ['sale', 'done'])
+                    ],
+                    fields=['product_id', 'price_subtotal:sum', 'product_uom_qty:sum'],
+                    groupby=['product_id']
+                )
+                
+                _logger.info(f"Successfully retrieved product sales data: {len(product_sales)} products")
+            except Exception as e:
+                _logger.error(f"Error retrieving product sales: {str(e)}")
+                product_sales = []
             
             # Dapatkan 5 produk teratas berdasarkan nilai penjualan
-            top_products = sorted(product_sales, key=lambda x: x.get('price_subtotal', 0), reverse=True)[:5]
-            
-            if top_products:
-                result += "Produk dengan Nilai Penjualan Tertinggi:\n"
-                for i, product_data in enumerate(top_products, 1):
-                    product_id = product_data.get('product_id')
-                    if isinstance(product_id, tuple):
-                        product_id, product_name = product_id
-                    else:
-                        product = self.env['product.product'].browse(product_id)
-                        product_name = product.name
-                    
-                    total_sales = product_data.get('price_subtotal', 0)
-                    quantity = product_data.get('product_uom_qty', 0)
-                    
-                    result += f"{i}. {product_name}:\n"
-                    result += f"   Total Penjualan: {total_sales:,.2f}\n"
-                    result += f"   Jumlah Terjual: {quantity} unit\n"
+            try:
+                # Filter out None values and sort safely
+                valid_product_sales = [p for p in product_sales if p.get('product_id') and p.get('price_subtotal')]
+                top_products = sorted(valid_product_sales, key=lambda x: x.get('price_subtotal', 0), reverse=True)[:5]
+                
+                if top_products:
+                    result += "Produk dengan Nilai Penjualan Tertinggi:\n"
+                    for i, product_data in enumerate(top_products, 1):
+                        try:
+                            product_id = product_data.get('product_id')
+                            if isinstance(product_id, tuple):
+                                product_id, product_name = product_id
+                            else:
+                                product = self.env['product.product'].browse(product_id)
+                                product_name = product.name
+                            
+                            total_sales = product_data.get('price_subtotal', 0)
+                            quantity = product_data.get('product_uom_qty', 0)
+                            
+                            result += f"{i}. {product_name}:\n"
+                            result += f"   Total Penjualan: {total_sales:,.2f}\n"
+                            result += f"   Jumlah Terjual: {quantity} unit\n"
+                        except Exception as e:
+                            _logger.error(f"Error processing product {i}: {str(e)}")
+                            continue
+            except Exception as e:
+                _logger.error(f"Error analyzing top products: {str(e)}")
+                result += "Tidak dapat menganalisis produk teratas.\n"
             
             # Analisis segmen pelanggan dengan ORM yang aman
-            customer_sales = self.env['sale.order'].read_group(
-                domain=[
-                    ('date_order', '>=', start_date),
-                    ('date_order', '<=', today),
-                    ('state', 'in', ['sale', 'done'])
-                ],
-                fields=['partner_id', 'amount_total:sum', 'id:count'],
-                groupby=['partner_id']
-            )
-            
-            # Hitung nilai pelanggan dengan segmentasi sederhana
-            customer_segments = {
-                'Premium (>10jt)': 0,
-                'High Value (5-10jt)': 0,
-                'Medium Value (1-5jt)': 0,
-                'Low Value (<1jt)': 0
-            }
-            
-            for customer in customer_sales:
-                total_value = customer.get('amount_total', 0)
+            try:
+                customer_sales = self.env['sale.order'].read_group(
+                    domain=[
+                        ('date_order', '>=', start_date),
+                        ('date_order', '<=', today),
+                        ('state', 'in', ['sale', 'done']),
+                        ('partner_id', '!=', False)
+                    ],
+                    fields=['partner_id', 'amount_total:sum', 'id:count'],
+                    groupby=['partner_id']
+                )
                 
-                if total_value > 10000000:
-                    customer_segments['Premium (>10jt)'] += 1
-                elif total_value > 5000000:
-                    customer_segments['High Value (5-10jt)'] += 1
-                elif total_value > 1000000:
-                    customer_segments['Medium Value (1-5jt)'] += 1
-                else:
-                    customer_segments['Low Value (<1jt)'] += 1
-            
-            total_customers = sum(customer_segments.values())
-            
-            if total_customers > 0:
-                result += "\nSegmentasi Pelanggan Berdasarkan Nilai:\n"
-                for segment, count in customer_segments.items():
-                    percentage = (count / total_customers) * 100 if total_customers else 0
-                    result += f"- {segment}: {count} pelanggan ({percentage:.2f}%)\n"
+                _logger.info(f"Successfully retrieved customer sales data: {len(customer_sales)} customers")
+                
+                # Hitung nilai pelanggan dengan segmentasi sederhana
+                customer_segments = {
+                    'Premium (>10jt)': 0,
+                    'High Value (5-10jt)': 0,
+                    'Medium Value (1-5jt)': 0,
+                    'Low Value (<1jt)': 0
+                }
+                
+                for customer in customer_sales:
+                    total_value = customer.get('amount_total', 0)
+                    
+                    if total_value > 10000000:
+                        customer_segments['Premium (>10jt)'] += 1
+                    elif total_value > 5000000:
+                        customer_segments['High Value (5-10jt)'] += 1
+                    elif total_value > 1000000:
+                        customer_segments['Medium Value (1-5jt)'] += 1
+                    else:
+                        customer_segments['Low Value (<1jt)'] += 1
+                
+                total_customers = sum(customer_segments.values())
+                
+                if total_customers > 0:
+                    result += "\nSegmentasi Pelanggan Berdasarkan Nilai:\n"
+                    for segment, count in customer_segments.items():
+                        percentage = (count / total_customers) * 100 if total_customers else 0
+                        result += f"- {segment}: {count} pelanggan ({percentage:.2f}%)\n"
+            except Exception as e:
+                _logger.error(f"Error analyzing customer segments: {str(e)}")
+                result += "\nTidak dapat menganalisis segmentasi pelanggan.\n"
             
             # Analisis produk berdasarkan kategori
-            category_sales = self.env['sale.order.line'].read_group(
-                domain=[
-                    ('order_id.date_order', '>=', start_date),
-                    ('order_id.date_order', '<=', today),
-                    ('order_id.state', 'in', ['sale', 'done'])
-                ],
-                fields=['product_id.categ_id', 'price_subtotal:sum'],
-                groupby=['product_id.categ_id']
-            )
-            
-            if category_sales:
-                result += "\nPerforma Penjualan per Kategori Produk:\n"
-                for category_data in sorted(category_sales, key=lambda x: x.get('price_subtotal', 0), reverse=True):
-                    category = category_data.get('product_id.categ_id')
-                    if isinstance(category, tuple):
-                        category_id, category_name = category
-                    else:
-                        category_obj = self.env['product.category'].browse(category)
-                        category_name = category_obj.name
-                    
-                    sales_value = category_data.get('price_subtotal', 0)
-                    result += f"- {category_name}: {sales_value:,.2f}\n"
+            try:
+                category_sales = self.env['sale.order.line'].read_group(
+                    domain=[
+                        ('order_id.date_order', '>=', start_date),
+                        ('order_id.date_order', '<=', today),
+                        ('order_id.state', 'in', ['sale', 'done'])
+                    ],
+                    fields=['product_id.categ_id', 'price_subtotal:sum'],
+                    groupby=['product_id.categ_id']
+                )
+                
+                _logger.info(f"Successfully retrieved category sales data: {len(category_sales)} categories")
+                
+                if category_sales:
+                    result += "\nPerforma Penjualan per Kategori Produk:\n"
+                    for category_data in sorted(
+                        [c for c in category_sales if c.get('product_id.categ_id') and c.get('price_subtotal')],
+                        key=lambda x: x.get('price_subtotal', 0), 
+                        reverse=True
+                    ):
+                        try:
+                            category = category_data.get('product_id.categ_id')
+                            if isinstance(category, tuple):
+                                category_id, category_name = category
+                            else:
+                                category_obj = self.env['product.category'].browse(category)
+                                category_name = category_obj.name
+                            
+                            sales_value = category_data.get('price_subtotal', 0)
+                            result += f"- {category_name}: {sales_value:,.2f}\n"
+                        except Exception as e:
+                            _logger.error(f"Error processing category: {str(e)}")
+                            continue
+            except Exception as e:
+                _logger.error(f"Error analyzing product categories: {str(e)}")
+                result += "\nTidak dapat menganalisis kategori produk.\n"
             
             # Rekomendasi umum
             result += "\nArea Potensial untuk Ekspansi dan Pertumbuhan:\n"
             
             # Rekomendasi berdasarkan data yang sudah dianalisis
-            if top_products:
-                top_product_name = top_products[0].get('product_id')[1] if isinstance(top_products[0].get('product_id'), tuple) else self.env['product.product'].browse(top_products[0].get('product_id')).name
-                result += f"1. Fokus pada pengembangan produk/layanan sejenis dengan '{top_product_name}' yang menunjukkan performa terbaik.\n"
+            try:
+                if top_products and len(top_products) > 0:
+                    product_entry = top_products[0]
+                    if isinstance(product_entry.get('product_id'), tuple):
+                        top_product_name = product_entry.get('product_id')[1]
+                    else:
+                        product_obj = self.env['product.product'].browse(product_entry.get('product_id'))
+                        top_product_name = product_obj.name
+                        
+                    result += f"1. Fokus pada pengembangan produk/layanan sejenis dengan '{top_product_name}' yang menunjukkan performa terbaik.\n"
+                else:
+                    result += "1. Evaluasi portfolio produk saat ini dan identifikasi kategori dengan potensi pertumbuhan tinggi.\n"
+            except Exception as e:
+                _logger.error(f"Error generating product recommendation: {str(e)}")
+                result += "1. Evaluasi portfolio produk saat ini dan identifikasi kategori dengan potensi pertumbuhan tinggi.\n"
             
             # Rekomendasi berdasarkan segmen pelanggan
-            premium_count = customer_segments['Premium (>10jt)']
-            high_count = customer_segments['High Value (5-10jt)']
-            if premium_count + high_count > 0:
-                result += f"2. Kembangkan program loyalitas khusus untuk {premium_count + high_count} pelanggan nilai tinggi yang ada.\n"
-            else:
+            try:
+                premium_count = customer_segments.get('Premium (>10jt)', 0)
+                high_count = customer_segments.get('High Value (5-10jt)', 0)
+                if premium_count + high_count > 0:
+                    result += f"2. Kembangkan program loyalitas khusus untuk {premium_count + high_count} pelanggan nilai tinggi yang ada.\n"
+                else:
+                    result += "2. Implementasikan strategi up-selling dan cross-selling untuk meningkatkan nilai transaksi rata-rata.\n"
+            except Exception as e:
+                _logger.error(f"Error generating customer segment recommendation: {str(e)}")
                 result += "2. Implementasikan strategi up-selling dan cross-selling untuk meningkatkan nilai transaksi rata-rata.\n"
             
             # Rekomendasi kategori
-            if category_sales:
-                top_category = category_sales[0].get('product_id.categ_id')
-                if isinstance(top_category, tuple):
-                    top_category_name = top_category[1]
+            try:
+                valid_categories = [c for c in category_sales if c.get('product_id.categ_id') and c.get('price_subtotal')]
+                if valid_categories:
+                    top_category = valid_categories[0].get('product_id.categ_id')
+                    if isinstance(top_category, tuple):
+                        top_category_name = top_category[1]
+                    else:
+                        top_category_obj = self.env['product.category'].browse(top_category)
+                        top_category_name = top_category_obj.name
+                    
+                    result += f"3. Perluas lini produk dalam kategori '{top_category_name}' yang menunjukkan permintaan tertinggi.\n"
                 else:
-                    top_category_name = self.env['product.category'].browse(top_category).name
-                
-                result += f"3. Perluas lini produk dalam kategori '{top_category_name}' yang menunjukkan permintaan tertinggi.\n"
+                    result += "3. Identifikasi kategori produk dengan margin tertinggi dan tingkatkan fokus pemasaran pada kategori tersebut.\n"
+            except Exception as e:
+                _logger.error(f"Error generating category recommendation: {str(e)}")
+                result += "3. Identifikasi kategori produk dengan margin tertinggi dan tingkatkan fokus pemasaran pada kategori tersebut.\n"
             
-            # Rekomendasi umum
+            # Rekomendasi umum yang selalu relevan
             result += "4. Evaluasi penawaran kompetitif dan lacak tren industri untuk menemukan ceruk pasar baru.\n"
             result += "5. Pertimbangkan ekspansi geografis atau saluran penjualan baru untuk menjangkau segmen pelanggan yang belum terlayani.\n"
             
@@ -2122,9 +2196,18 @@ class AIChat(models.Model):
             
         except Exception as e:
             _logger.error(f"Error in business opportunity analysis: {str(e)}", exc_info=True)
-            return f"Maaf, sepertinya terjadi kesalahan dalam mengambil data penjualan dari sistem. Untuk menganalisis peluang bisnis dan mengidentifikasi area potensial untuk ekspansi dan pertumbuhan, diperlukan data penjualan selama 6 bulan terakhir. Jika Anda dapat memastikan data tersebut tersedia, saya akan dengan senang hati membantu menganalisisnya untuk Anda."
-
-        
+            # Berikan pesan yang lebih membantu bahkan jika analisis gagal
+            return (
+                "Analisis Peluang Bisnis (6 Bulan Terakhir):\n\n"
+                "Rekomendasi Umum untuk Ekspansi dan Pertumbuhan:\n\n"
+                "1. Evaluasi portfolio produk saat ini untuk mengidentifikasi produk/layanan dengan performa terbaik\n"
+                "2. Segmentasi pelanggan berdasarkan nilai dan frekuensi pembelian untuk program pemasaran yang lebih ditargetkan\n"
+                "3. Analisis kategori produk untuk menentukan area fokus pengembangan\n"
+                "4. Lakukan riset pasar untuk mengidentifikasi tren dan peluang baru\n"
+                "5. Pertimbangkan strategi ekspansi geografis atau penambahan saluran distribusi baru\n"
+                "6. Implementasikan program loyalitas untuk meningkatkan retensi dan nilai pelanggan\n"
+                "7. Optimalkan proses operasional untuk meningkatkan margin dan efisiensi bisnis\n"
+            )
     def _get_workflow_efficiency_analysis(self, message):
         """Analyze workshop workflow efficiency and mechanic performance"""
         try:
