@@ -47,6 +47,7 @@ class AIController(http.Controller):
             # Map operations to methods
             operations_map = {
                 'get_chat_list': self._get_chat_list,
+                'get_archived_chats': self._get_archived_chats,
                 'create_chat': self._create_chat,
                 'archive_chat': self._archive_chat,
                 'restore_chat': self._restore_chat,
@@ -92,6 +93,7 @@ class AIController(http.Controller):
             # Filter active status only if not including archived
             if not include_archived:
                 domain.append(('active', '=', True))
+                domain.append(('state', '=', 'active'))
             
             # Get chats based on domain
             chats = request.env['ai.chat'].sudo().search(domain, order='last_message_date desc')
@@ -124,6 +126,48 @@ class AIController(http.Controller):
             
         except Exception as e:
             _logger.error(f"Error getting chat list: {str(e)}")
+            return {'success': False, 'error': str(e)}
+    def _get_archived_chats(self, params):
+        """Get only archived chats for the current user"""
+        try:
+            # Build domain untuk archived chats saja
+            domain = [
+                ('user_id', '=', request.env.user.id),
+                ('active', '=', False),
+                ('state', '=', 'archived')
+            ]
+            
+            # Get chats based on domain
+            chats = request.env['ai.chat'].sudo().search(domain, order='last_message_date desc')
+            
+            result = []
+            for chat in chats:
+                # Get the last message
+                last_message = chat.message_ids.sorted('create_date', reverse=True)[:1]
+                
+                # Include state and active status in response
+                result.append({
+                    'id': chat.id,
+                    'name': chat.name,
+                    'created_at': chat.create_date.isoformat(),
+                    'last_message_date': chat.last_message_date.isoformat() if chat.last_message_date else None,
+                    'last_message': last_message.content[:100] + '...' if last_message and last_message.content else None,
+                    'total_messages': len(chat.message_ids),
+                    'total_tokens': chat.total_tokens,
+                    'topic': chat.topic or 'New Chat',
+                    'summary': chat.summary or None,
+                    'state': 'archived',  # Hard-code untuk archived
+                    'active': False,  # Hard-code active=False
+                    'category': 'business' if 'business' in chat.name.lower() else 'general'  # Add category
+                })
+            
+            return {
+                'success': True,
+                'chats': result
+            }
+            
+        except Exception as e:
+            _logger.error(f"Error getting archived chat list: {str(e)}")
             return {'success': False, 'error': str(e)}
     
     def _create_chat(self, params):
@@ -178,8 +222,14 @@ class AIController(http.Controller):
             if not chat.exists() or chat.user_id.id != request.env.user.id:
                 return {'success': False, 'error': 'Chat not found or access denied'}
             
-            # Archive the chat
-            chat.active = False
+            # Archive the chat - update both active flag and state
+            chat.write({
+                'active': False,
+                'state': 'archived'
+            })
+            
+            # Force commit to ensure changes are saved
+            request.env.cr.commit()
             
             return {'success': True, 'message': 'Chat archived successfully'}
             
@@ -201,8 +251,14 @@ class AIController(http.Controller):
             if not chat.exists() or chat.user_id.id != request.env.user.id:
                 return {'success': False, 'error': 'Chat not found or access denied'}
             
-            # Restore the chat
-            chat.active = True
+            # Restore the chat - update both active flag and state
+            chat.write({
+                'active': True,
+                'state': 'active'
+            })
+            
+            # Force commit to ensure changes are saved
+            request.env.cr.commit()
             
             return {'success': True, 'message': 'Chat restored successfully'}
             
