@@ -537,8 +537,9 @@ class AIController(http.Controller):
             if values:
                 user_settings.write(values)
                 
-                # Pastikan perubahan di-commit ke database
-                request.env.cr.commit()
+                # Verifikasi perubahan
+                user_settings.flush()
+                user_settings.invalidate_cache()
                 
                 # Log setelah update
                 _logger.info(f"Settings updated successfully for user {request.env.user.id}")
@@ -548,8 +549,6 @@ class AIController(http.Controller):
             
         except Exception as e:
             _logger.error(f"Error updating AI settings: {str(e)}", exc_info=True)
-            # Rollback jika terjadi error
-            request.env.cr.rollback()
             return {'success': False, 'error': str(e)}
     
     def _export_chat(self, params):
