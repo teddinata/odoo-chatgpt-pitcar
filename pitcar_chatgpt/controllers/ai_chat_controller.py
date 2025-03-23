@@ -500,39 +500,56 @@ class AIController(http.Controller):
             # Get user settings
             user_settings = request.env['ai.user.settings'].sudo().get_user_settings()
             
+            # Check if settings parameter exists
+            if not params or 'settings' not in params:
+                return {'success': False, 'error': 'No settings provided'}
+            
+            settings_data = params.get('settings', {})
+            
+            # Log data untuk debugging
+            _logger.info(f"Updating settings with data: {settings_data}")
+            
             # Update settings
             values = {}
             
-            if 'default_model' in params:
-                values['default_model'] = params['default_model']
+            if 'default_model' in settings_data:
+                values['default_model'] = settings_data['default_model']
                 
-            if 'temperature' in params and isinstance(params['temperature'], (int, float)):
-                values['temperature'] = min(max(params['temperature'], 0.0), 2.0)  # Limit to range 0-2
+            if 'daily_gpt4_limit' in settings_data and isinstance(settings_data['daily_gpt4_limit'], int):
+                values['daily_gpt4_limit'] = settings_data['daily_gpt4_limit']
                 
-            if 'max_tokens' in params and isinstance(params['max_tokens'], int):
-                values['max_tokens'] = min(max(params['max_tokens'], 100), 4000)  # Limit to range 100-4000
+            if 'temperature' in settings_data and isinstance(settings_data['temperature'], (int, float)):
+                values['temperature'] = min(max(settings_data['temperature'], 0.0), 2.0)  # Limit to range 0-2
                 
-            if 'custom_system_prompt' in params:
-                values['custom_system_prompt'] = params['custom_system_prompt']
+            if 'max_tokens' in settings_data and isinstance(settings_data['max_tokens'], int):
+                values['max_tokens'] = min(max(settings_data['max_tokens'], 100), 16000)  # Limit to range 100-16000
                 
-            if 'fallback_to_gpt35' in params:
-                values['fallback_to_gpt35'] = bool(params['fallback_to_gpt35'])
+            if 'custom_system_prompt' in settings_data:
+                values['custom_system_prompt'] = settings_data['custom_system_prompt']
                 
-            if 'default_data_context' in params:
-                values['default_data_context'] = params['default_data_context']
-                
-            if 'data_modules' in params and isinstance(params['data_modules'], list):
-                values['data_modules'] = params['data_modules']
+            if 'fallback_to_gpt35' in settings_data:
+                values['fallback_to_gpt35'] = bool(settings_data['fallback_to_gpt35'])
+            
+            # Log untuk debugging
+            _logger.info(f"Values to write: {values}")
             
             # Apply updates if any
             if values:
                 user_settings.write(values)
+                
+                # Pastikan perubahan di-commit ke database
+                request.env.cr.commit()
+                
+                # Log setelah update
+                _logger.info(f"Settings updated successfully for user {request.env.user.id}")
             
             # Return updated settings
             return self._get_ai_settings({})
             
         except Exception as e:
-            _logger.error(f"Error updating AI settings: {str(e)}")
+            _logger.error(f"Error updating AI settings: {str(e)}", exc_info=True)
+            # Rollback jika terjadi error
+            request.env.cr.rollback()
             return {'success': False, 'error': str(e)}
     
     def _export_chat(self, params):
