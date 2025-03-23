@@ -277,16 +277,28 @@ class AIController(http.Controller):
             if not chat.exists() or chat.user_id.id != request.env.user.id:
                 return {'success': False, 'error': 'Chat not found or access denied'}
             
+            # Log state sebelum perubahan
+            _logger.info(f"Restoring chat {chat_id}. Current state: {chat.state}, active: {chat.active}")
+            
             # Restore the chat - update both active flag and state
             chat.write({
                 'active': True,
                 'state': 'active'
             })
             
-            # Force commit to ensure changes are saved
-            request.env.cr.commit()
+            # Periksa kembali state setelah perubahan untuk logging
+            chat.flush()  # Flush changes to database
+            chat.invalidate_cache()  # Invalidate cache to ensure fresh read
             
-            return {'success': True, 'message': 'Chat restored successfully'}
+            # Re-read from database to verify
+            chat = request.env['ai.chat'].sudo().browse(chat_id)
+            _logger.info(f"After restore, state: {chat.state}, active: {chat.active}")
+            
+            return {'success': True, 'message': 'Chat restored successfully', 'chat': {
+                'id': chat.id,
+                'state': chat.state,
+                'active': chat.active
+            }}
             
         except Exception as e:
             _logger.error(f"Error restoring chat: {str(e)}")
