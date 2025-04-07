@@ -2906,39 +2906,6 @@ class AIChat(models.Model):
             _logger.error(f"Error getting general car statistics: {str(e)}")
             return f"Error mendapatkan statistik umum mobil: {str(e)}"
     
-    def _analyze_car_engines(self, cars):
-        """Analyze cars by engine type"""
-        engine_types = {}
-        for car in cars:
-            engine_type = car.engine_type or 'unknown'
-            if engine_type in engine_types:
-                engine_types[engine_type] += 1
-            else:
-                engine_types[engine_type] = 1
-        
-        # Sort results
-        sorted_engines = sorted(engine_types.items(), key=lambda x: x[1], reverse=True)
-        
-        result = f"Analisis Jenis Mesin Mobil (Total: {len(cars)} mobil):\n\n"
-        
-        # Map engine type codes to human-readable names
-        engine_names = {
-            'petrol': 'Bensin',
-            'diesel': 'Diesel',
-            'electric': 'Listrik',
-            'hybrid': 'Hybrid',
-            'gas': 'Gas',
-            'other': 'Lainnya',
-            'unknown': 'Tidak Diketahui'
-        }
-        
-        for engine_type, count in sorted_engines:
-            name = engine_names.get(engine_type, engine_type)
-            percentage = (count / len(cars)) * 100
-            result += f"- {name}: {count} mobil ({percentage:.1f}%)\n"
-        
-        return result
-    
     def _get_top_products_analysis(self, message):
         """Analyze top selling products and services"""
         try:
