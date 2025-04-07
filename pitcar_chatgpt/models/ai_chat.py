@@ -1256,32 +1256,200 @@ class AIChat(models.Model):
         # Store embeddings (could be in a separate model or Redis)
         return embeddings
 
-    def _find_similar_products(self, query, top_n=5):
-        """Find products similar to the query using embeddings"""
-        # Get query embedding
-        response = openai.Embedding.create(
-            model="text-embedding-ada-002",
-            input=query
-        )
-        query_embedding = response['data'][0]['embedding']
+    def _find_similar_products(self, query, threshold=0.6, limit=10):
+        """Find similar products without external dependencies"""
+        all_products = self.env['product.product'].search([('active', '=', True)])
         
-        # Get product embeddings
-        product_embeddings = self._build_product_embeddings()
+        if not all_products:
+            return []
         
-        # Calculate similarities
-        import numpy as np
-        from scipy.spatial.distance import cosine
+        # Bersihkan query
+        query = self._normalize_text(query)
+        query_words = set(query.split())
         
-        similarities = {}
-        for product_id, embedding in product_embeddings.items():
-            similarity = 1 - cosine(query_embedding, embedding)
-            similarities[product_id] = similarity
+        # Cari produk yang memiliki kesamaan
+        results = []
+        for product in all_products:
+            product_name = self._normalize_text(product.name)
+            product_words = set(product_name.split())
+            
+            # Hitung similaritas berdasarkan kata-kata yang sama
+            common_words = query_words.intersection(product_words)
+            
+            if common_words:
+                # Jaccard similarity: intersection / union
+                similarity = len(common_words) / len(query_words.union(product_words))
+                
+                # Tambahkan bonus jika mengandung kata kunci secara lengkap
+                for word in query_words:
+                    if word in product_name:
+                        similarity += 0.1
+                
+                if similarity >= threshold:
+                    results.append((product.id, product.name, similarity * 100))
         
-        # Sort by similarity
-        sorted_products = sorted(similarities.items(), key=lambda x: x[1], reverse=True)[:top_n]
+        # Urutkan berdasarkan nilai similaritas tertinggi
+        results.sort(key=lambda x: x[2], reverse=True)
+        return results[:limit]
+
+    def _normalize_text(self, text):
+        """Normalize text for better matching"""
+        if not text:
+            return ""
         
-        return sorted_products
+        # Konversi ke lowercase
+        text = text.lower()
+        
+        # Hapus karakter khusus
+        import re
+        text = re.sub(r'[^\w\s]', ' ', text)
+        
+        # Hapus multiple spaces
+        text = re.sub(r'\s+', ' ', text).strip()
+        
+        return text
     
+    def _get_product_inventory_data(self, message=None):
+        """Get comprehensive inventory data based on query"""
+        try:
+            # Ekstrak kategori yang cocok dari analyze_message yang sudah ada
+            matched_categories = self._analyze_message(message)
+            product_related = any(category in ['inventory', 'product'] for category in matched_categories)
+            
+            # Jika bukan query produk, kembalikan None untuk diproses oleh fungsi lain
+            if not product_related and len(matched_categories) > 0 and 'basic' not in matched_categories:
+                return None
+            
+            # Ekstrak kata kunci produk dari pesan
+            product_keywords = self._extract_product_keywords(message)
+            
+            # Bangun domain pencarian yang dinamis
+            domain = [('type', '=', 'product')]
+            
+            # Jika ada kata kunci produk, tambahkan ke domain
+            if product_keywords:
+                product_domain = []
+                for keyword in product_keywords:
+                    product_domain.append(('name', 'ilike', keyword))
+                if product_domain:
+                    domain.append('|')
+                    domain.extend(product_domain)
+            
+            # Cari produk berdasarkan domain
+            products = self.env['product.product'].search(domain)
+            
+            # Jika tidak ada hasil langsung dan ada pesan, gunakan pencarian similaritas
+            if not products and message:
+                # Coba pencarian dengan similaritas untuk kata-kata kunci atau pesan utuh
+                search_term = ' '.join(product_keywords) if product_keywords else message
+                similar_products = self._find_similar_products(search_term)
+                
+                if similar_products:
+                    product_ids = [p[0] for p in similar_products]
+                    products = self.env['product.product'].browse(product_ids)
+            
+            # Format hasil pencarian
+            if not products:
+                # Tampilkan kategori jika tidak ada produk yang ditemukan
+                categories = self.env['product.category'].search([])
+                if categories:
+                    result = "Tidak menemukan produk spesifik. Berikut kategori produk yang tersedia:\n\n"
+                    for category in categories:
+                        product_count = self.env['product.product'].search_count([
+                            ('categ_id', '=', category.id),
+                            ('type', '=', 'product')
+                        ])
+                        if product_count > 0:
+                            result += f"- {category.name} ({product_count} produk)\n"
+                    return result
+                else:
+                    return "Tidak ditemukan data produk dalam inventaris."
+            
+            # Format output
+            result = f"Daftar Inventaris Produk ({len(products)} produk):\n\n"
+            
+            # Kelompokkan berdasarkan kategori
+            products_by_category = {}
+            for product in products:
+                category = product.categ_id.name or "Lainnya"
+                if category not in products_by_category:
+                    products_by_category[category] = []
+                products_by_category[category].append(product)
+            
+            # Format output per kategori
+            for category, prods in products_by_category.items():
+                result += f"== {category} ({len(prods)} produk) ==\n"
+                for product in prods:
+                    result += f"- {product.name}\n"
+                    result += f"  Stok: {product.qty_available} {product.uom_id.name}\n"
+                    if hasattr(product, 'list_price') and product.list_price:
+                        result += f"  Harga: {product.list_price:,.2f}\n"
+                    
+                    # Tambahkan informasi tambahan
+                    if hasattr(product, 'default_code') and product.default_code:
+                        result += f"  Kode: {product.default_code}\n"
+                    
+                    if hasattr(product, 'brand') and product.brand:
+                        result += f"  Merek: {product.brand}\n"
+                    
+                    result += "\n"
+            
+            return result
+                
+        except Exception as e:
+            _logger.error(f"Error getting inventory data: {str(e)}")
+            return f"Error mendapatkan data inventaris: {str(e)}"
+        
+    def _extract_product_keywords(self, message):
+        """Extract product keywords from message"""
+        if not message:
+            return []
+        
+        # Hapus kata-kata umum yang tidak relevan
+        common_words = {'apa', 'yang', 'saat', 'ini', 'kita', 'punya', 'ada', 'tolong', 'cek', 'stok',
+                    'bisa', 'mohon', 'minta', 'bantu', 'informasi', 'terkait', 'tentang'}
+        
+        # Bersihkan pesan
+        message = self._normalize_text(message)
+        
+        # Tokenisasi dan filter
+        tokens = message.split()
+        filtered_tokens = [token for token in tokens if token not in common_words and len(token) > 2]
+        
+        # Deteksi frase produk menggunakan regex
+        import re
+        
+        # Pola untuk produk umum
+        product_patterns = [
+            r'(?i)(oli|minyak|pelumas)\s+([\w\s]+)',      # Oli + nama
+            r'(?i)(ban|tire|wheel)\s+([\w\s]+)',          # Ban + nama
+            r'(?i)(filter)\s+(udara|oli|bensin|solar)',   # Filter + tipe
+            r'(?i)(aki|baterai|battery)\s+([\w\s]+)',     # Aki + nama
+            r'(?i)(shell|mobil|pertamina|castrol|total)\s+([\w\s]+)'  # Brand + tipe
+        ]
+        
+        found_phrases = []
+        for pattern in product_patterns:
+            matches = re.findall(pattern, message)
+            for match in matches:
+                if isinstance(match, tuple):
+                    found_phrases.append(' '.join(match).strip())
+                else:
+                    found_phrases.append(match.strip())
+        
+        # Tambahkan kata kunci individual yang mungkin merupakan nama produk
+        product_keywords = []
+        special_keywords = {'oli', 'ban', 'filter', 'aki', 'sparepart', 'shell', 'mobil', 'pertamina', 'castrol'}
+        
+        for token in filtered_tokens:
+            if token in special_keywords or token[0].isupper():
+                product_keywords.append(token)
+        
+        # Gabungkan semua kata kunci
+        all_keywords = list(set(product_keywords + found_phrases))
+        
+        return all_keywords
+        
     def _get_conversation_context(self, chat):
         """Extract context from previous messages"""
         messages = chat.message_ids.sorted('create_date', reverse=True)[:10]
@@ -3725,21 +3893,21 @@ You are an AI assistant integrated with Odoo ERP.
 You help users analyze business data and make informed decisions.
 Below are some guidelines to follow:
 
-1. When analyzing data, provide clear insights and actionable recommendations
-2. Answer based only on the data provided, avoid making assumptions
-3. For sales analysis, compare performance across time periods and calculate growth rates
-4. For inventory analysis, identify low stock items and potential ordering needs
-5. For finance analysis, highlight important metrics and trends
-6. Use formatting to make your responses easy to read
-7. If you don't have the data to answer a question, explain what data would be needed
 
-Important guidelines:
-1. When a user mentions a product partially, try to find the closest match. For example, 
-    if they mention "Shell HX6", understand they're referring to "Shell Helix HX6".
-2. For partial product names, always suggest the full product name in your response.
-3. Consider product categories - if a user mentions a generic product type, explain
-    the different specific products available in that category.
-4. Always confirm with the user if you had to guess which specific product they meant.
+1. When answering questions about products or inventory:
+   - Always provide specific information from the database
+   - If a user mentions a product partially (e.g. "Shell HX"), assume they mean any product matching that pattern
+   - List matching products with their details (stock, price, etc.)
+   - For very general queries like "apa saja oli yang kita punya", show categorized results
+   - Mention alternatives when a specific product has low stock
+
+2. For other business data:
+   - Provide clear insights and actionable recommendations
+   - Answer based only on the data provided, avoid making assumptions
+   - For sales analysis, compare performance across time periods and calculate growth rates
+   - For inventory analysis, identify low stock items and potential ordering needs
+   - For finance analysis, highlight important metrics and trends
+   - Use formatting to make your responses easy to read
 
 The data in square brackets [DATA] is provided by the system - it's not visible to the user but provides you the context to answer their questions accurately.
 """
@@ -3787,7 +3955,7 @@ When answering questions:
 """
     
     def _gather_relevant_data(self, message):
-        """Analyze message and gather relevant data from Odoo, including enhanced data and predictive analytics"""
+        """Analyze message and gather relevant data from Odoo"""
         message_lower = message.lower()
         
         # Cek apakah pertanyaan meminta laporan komprehensif
@@ -3803,8 +3971,22 @@ When answering questions:
         
         result = []
         
-        # Get data untuk setiap kategori
+        # Prioritaskan pencarian produk jika ada kategori produk atau inventaris
+        if 'product' in data_categories or 'inventory' in data_categories:
+            try:
+                product_data = self._get_product_inventory_data(message)
+                if product_data:
+                    result.append(product_data)
+            except Exception as e:
+                _logger.error(f"Error getting product data: {str(e)}")
+                result.append(f"Error mendapatkan data produk: {str(e)}")
+        
+        # Get data untuk setiap kategori lainnya
         for category in data_categories:
+            # Lewati kategori product/inventory yang sudah dihandle
+            if category in ['product', 'inventory']:
+                continue
+            
             method_name = f"_get_{category}_data"
             if hasattr(self, method_name):
                 try:
