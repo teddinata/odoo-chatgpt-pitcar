@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, date
 import uuid
 import re
 
+
 _logger = logging.getLogger(__name__)
 
 class AIUserSettings(models.Model):
@@ -1181,6 +1182,147 @@ class AIChat(models.Model):
         except Exception as e:
             _logger.error(f"Error getting comprehensive data: {str(e)}")
             return f"\nError mendapatkan data komprehensif: {str(e)}"
+        
+    def _find_product_by_fuzzy_name(self, partial_name, threshold=0.7):
+        """Find products using simple fuzzy matching on product names"""
+        all_products = self.env['product.product'].search([('active', '=', True)])
+        result = []
+        
+        for product in all_products:
+            # Hitung similaritas sederhana
+            score = self._simple_similarity(partial_name.lower(), product.name.lower())
+            if score > threshold:
+                result.append((product.id, product.name, score))
+        
+        # Urutkan berdasarkan skor
+        return sorted(result, key=lambda x: x[2], reverse=True)[:5]
+
+    def _simple_similarity(self, s1, s2):
+        """Calculate a simple similarity score between two strings"""
+        # Implementasi sederhana dari ratio similarity
+        shorter = s1 if len(s1) < len(s2) else s2
+        longer = s2 if len(s1) < len(s2) else s1
+        
+        # Jika string kosong
+        if not longer:
+            return 1.0 if not shorter else 0.0
+        
+        # Hitung kesamaan berdasarkan substring
+        matches = sum(1 for char in shorter if char in longer)
+        return matches / max(len(shorter), len(longer))
+    
+    def _extract_entities(self, message):
+        """Extract entities from message using NLP"""
+        import spacy
+        
+        # Load model bahasa Indonesia atau English
+        nlp = spacy.load("en_core_web_sm")  # atau "id_core_news_sm" jika tersedia
+        
+        doc = nlp(message)
+        entities = {}
+        
+        for ent in doc.ents:
+            if ent.label_ not in entities:
+                entities[ent.label_] = []
+            entities[ent.label_].append(ent.text)
+        
+        return entities
+    
+    def _store_query_feedback(self, message, extracted_data, was_successful, feedback=None):
+        """Store query and feedback for improving matching"""
+        self.env['ai.chat.feedback'].create({
+            'query': message,
+            'extracted_data': json.dumps(extracted_data),
+            'success': was_successful,
+            'feedback': feedback,
+            'user_id': self.env.user.id,
+        })
+
+    def _build_product_embeddings(self):
+        """Build and store product embeddings for semantic search"""
+        import openai
+        
+        products = self.env['product.product'].search([])
+        embeddings = {}
+        
+        for product in products:
+            description = f"{product.name}: {product.description or ''}"
+            response = openai.Embedding.create(
+                model="text-embedding-ada-002",
+                input=description
+            )
+            embeddings[product.id] = response['data'][0]['embedding']
+        
+        # Store embeddings (could be in a separate model or Redis)
+        return embeddings
+
+    def _find_similar_products(self, query, top_n=5):
+        """Find products similar to the query using embeddings"""
+        # Get query embedding
+        response = openai.Embedding.create(
+            model="text-embedding-ada-002",
+            input=query
+        )
+        query_embedding = response['data'][0]['embedding']
+        
+        # Get product embeddings
+        product_embeddings = self._build_product_embeddings()
+        
+        # Calculate similarities
+        import numpy as np
+        from scipy.spatial.distance import cosine
+        
+        similarities = {}
+        for product_id, embedding in product_embeddings.items():
+            similarity = 1 - cosine(query_embedding, embedding)
+            similarities[product_id] = similarity
+        
+        # Sort by similarity
+        sorted_products = sorted(similarities.items(), key=lambda x: x[1], reverse=True)[:top_n]
+        
+        return sorted_products
+    
+    def _get_conversation_context(self, chat):
+        """Extract context from previous messages"""
+        messages = chat.message_ids.sorted('create_date', reverse=True)[:10]
+        context = {
+            'mentioned_products': set(),
+            'mentioned_categories': set(),
+            'customer_needs': set()
+        }
+        
+        for message in messages:
+            # Extract product mentions
+            products = self._extract_product_mentions(message.content)
+            context['mentioned_products'].update(products)
+            
+            # Extract categories
+            categories = self._extract_category_mentions(message.content)
+            context['mentioned_categories'].update(categories)
+        
+        return context
+    
+    def _get_cached_query_results(self, query_hash, max_age_hours=24):
+        """Get cached query results if available and not expired"""
+        cache_record = self.env['ai.chat.query.cache'].search([
+            ('query_hash', '=', query_hash),
+            ('create_date', '>=', fields.Datetime.now() - timedelta(hours=max_age_hours))
+        ], limit=1)
+        
+        if cache_record:
+            return json.loads(cache_record.result)
+        return None
+    
+    def _track_query_success(self, chat_id, message_id, was_successful, feedback=None):
+        """Track successful and unsuccessful queries for evaluation"""
+        self.env['ai.query.metrics'].create({
+            'chat_id': chat_id,
+            'message_id': message_id,
+            'query_text': self.env['ai.chat.message'].browse(message_id).content,
+            'was_successful': was_successful,
+            'feedback': feedback,
+            'timestamp': fields.Datetime.now()
+        })
         
     def _get_product_data(self, message):
         """Get product data based on the user's message"""
@@ -3591,12 +3733,28 @@ Below are some guidelines to follow:
 6. Use formatting to make your responses easy to read
 7. If you don't have the data to answer a question, explain what data would be needed
 
+Important guidelines:
+1. When a user mentions a product partially, try to find the closest match. For example, 
+    if they mention "Shell HX6", understand they're referring to "Shell Helix HX6".
+2. For partial product names, always suggest the full product name in your response.
+3. Consider product categories - if a user mentions a generic product type, explain
+    the different specific products available in that category.
+4. Always confirm with the user if you had to guess which specific product they meant.
+
 The data in square brackets [DATA] is provided by the system - it's not visible to the user but provides you the context to answer their questions accurately.
 """
         else:
             base_prompt = """
 You are an AI assistant that can help with general knowledge questions.
 Your name is AI Business Assistant, but you can answer questions on a wide range of topics beyond just business.
+
+Important guidelines:
+1. When a user mentions a product partially, try to find the closest match. For example, 
+    if they mention "Shell HX6", understand they're referring to "Shell Helix HX6".
+2. For partial product names, always suggest the full product name in your response.
+3. Consider product categories - if a user mentions a generic product type, explain
+    the different specific products available in that category.
+4. Always confirm with the user if you had to guess which specific product they meant.
 
 When answering questions:
 1. Be helpful, accurate, and informative
