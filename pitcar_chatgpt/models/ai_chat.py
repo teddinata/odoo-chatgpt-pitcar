@@ -1632,83 +1632,1279 @@ class AIChat(models.Model):
             time_period = self._extract_time_period(message)
             date_from, date_to = self._get_date_range(time_period)
             
-            # Siapkan domain untuk pencarian mobil
-            domain = []
-            
             message_lower = message.lower()
             
-            # Ekstrak kata kunci brand jika ada
-            brand_keywords = self._extract_car_brand_keywords(message)
-            if brand_keywords:
-                brand_domain = [('brand.name', 'ilike', kw) for kw in brand_keywords]
-                if brand_domain:
-                    domain.append('|')
-                    domain.extend(brand_domain)
+            # Cek jenis analisis yang diminta
+            if any(word in message_lower for word in ['sering', 'frequent', 'masuk', 'visit', 'kunjungan']):
+                return self._get_most_frequent_cars(date_from, date_to)
             
-            # Dapatkan semua mobil
-            cars = self.env['res.partner.car'].search(domain)
+            elif any(word in message_lower for word in ['merek', 'merk', 'brand']):
+                return self._analyze_car_brands(date_from, date_to)
             
-            if not cars:
-                return "Tidak ditemukan data mobil sesuai kriteria pencarian."
+            elif any(word in message_lower for word in ['tipe', 'type', 'model']):
+                return self._analyze_car_types(date_from, date_to)
             
-            # Analisis berdasarkan konteks pertanyaan
-            if 'terbanyak' in message_lower or 'populer' in message_lower:
-                return self._analyze_most_popular_cars(cars)
-            elif 'merek' in message_lower or 'brand' in message_lower:
-                return self._analyze_car_brands(cars)
-            elif 'tipe' in message_lower or 'type' in message_lower:
-                return self._analyze_car_types(cars)
-            elif 'tahun' in message_lower or 'year' in message_lower:
-                return self._analyze_car_years(cars)
-            elif 'mesin' in message_lower or 'engine' in message_lower:
-                return self._analyze_car_engines(cars)
-            else:
-                # Analisis umum
-                return self._get_general_car_statistics(cars)
+            elif any(word in message_lower for word in ['tahun', 'year', 'umur', 'age']):
+                return self._analyze_car_years(date_from, date_to)
+            
+            elif any(word in message_lower for word in ['mesin', 'engine']):
+                return self._analyze_car_engines(date_from, date_to)
+            
+            elif any(word in message_lower for word in ['warna', 'color']):
+                return self._analyze_car_colors(date_from, date_to)
+            
+            elif any(word in message_lower for word in ['transmisi', 'transmission']):
+                return self._analyze_car_transmissions(date_from, date_to)
+            
+            elif any(word in message_lower for word in ['service', 'servis', 'layanan', 'maintenance', 'perawatan']):
+                return self._analyze_car_services(date_from, date_to)
+            
+            elif any(word in message_lower for word in ['revenue', 'pendapatan', 'sales', 'penjualan', 'profit', 'margin']):
+                return self._analyze_car_revenue(date_from, date_to)
+            
+            # Jika tidak ada analisis spesifik, berikan tampilan umum
+            return self._get_general_car_statistics(date_from, date_to)
         
         except Exception as e:
             _logger.error(f"Error analyzing car data: {str(e)}")
             return f"Error mendapatkan analisis data mobil: {str(e)}"
+
+    def _get_most_frequent_cars(self, date_from, date_to):
+        """Analyze which cars visit the workshop most frequently"""
+        try:
+            # Query untuk mendapatkan mobil yang paling sering masuk bengkel
+            # berdasarkan sale.order yang memiliki partner_car_id
+            query = """
+                SELECT 
+                    pc.id as car_id,
+                    pc.number_plate,
+                    pb.name as brand_name,
+                    pt.name as type_name,
+                    pc.year,
+                    pc.engine_type,
+                    COUNT(DISTINCT so.id) as visit_count,
+                    MAX(so.date_order) as last_visit
+                FROM 
+                    sale_order so
+                JOIN 
+                    res_partner_car pc ON so.partner_car_id = pc.id
+                JOIN 
+                    res_partner_car_brand pb ON pc.brand_id = pb.id
+                JOIN 
+                    res_partner_car_type pt ON pc.brand_type = pt.id
+                WHERE 
+                    so.date_order >= %s AND
+                    so.date_order <= %s AND
+                    so.state in ('sale', 'done')
+                GROUP BY 
+                    pc.id, pc.number_plate, pb.name, pt.name, pc.year, pc.engine_type
+                ORDER BY 
+                    visit_count DESC
+                LIMIT 30
+            """
+            
+            self.env.cr.execute(query, (date_from, date_to))
+            result = self.env.cr.dictfetchall()
+            
+            if not result:
+                return f"Tidak ditemukan data kunjungan mobil dalam periode {date_from.strftime('%Y-%m-%d')} hingga {date_to.strftime('%Y-%m-%d')}."
+            
+            # Analisis berdasarkan merek
+            brand_counts = {}
+            for car in result:
+                brand = car['brand_name']
+                if brand in brand_counts:
+                    brand_counts[brand] += car['visit_count']
+                else:
+                    brand_counts[brand] = car['visit_count']
+            
+            # Analisis berdasarkan tipe
+            type_counts = {}
+            for car in result:
+                car_type = f"{car['brand_name']} {car['type_name']}"
+                if car_type in type_counts:
+                    type_counts[car_type] += car['visit_count']
+                else:
+                    type_counts[car_type] = car['visit_count']
+            
+            # Analisis berdasarkan jenis mesin
+            engine_counts = {}
+            for car in result:
+                engine = car['engine_type'] or 'Tidak Diketahui'
+                if engine in engine_counts:
+                    engine_counts[engine] += car['visit_count']
+                else:
+                    engine_counts[engine] = car['visit_count']
+            
+            # Analisis berdasarkan tahun
+            year_counts = {}
+            for car in result:
+                year = car['year']
+                if year in year_counts:
+                    year_counts[year] += car['visit_count']
+                else:
+                    year_counts[year] = car['visit_count']
+            
+            # Sortir berdasarkan frekuensi
+            sorted_brands = sorted(brand_counts.items(), key=lambda x: x[1], reverse=True)
+            sorted_types = sorted(type_counts.items(), key=lambda x: x[1], reverse=True)
+            sorted_engines = sorted(engine_counts.items(), key=lambda x: x[1], reverse=True)
+            sorted_years = sorted(year_counts.items(), key=lambda x: x[1], reverse=True)
+            
+            # Hitung total kunjungan
+            total_visits = sum(car['visit_count'] for car in result)
+            
+            # Format output
+            output = f"Analisis Mobil yang Paling Sering Masuk Bengkel ({date_from.strftime('%Y-%m-%d')} hingga {date_to.strftime('%Y-%m-%d')}):\n\n"
+            output += f"Total Kunjungan: {total_visits}\n"
+            output += f"Total Mobil Unik: {len(result)}\n\n"
+            
+            # Tampilkan berdasarkan merek
+            output += "Berdasarkan Merek Mobil:\n"
+            for i, (brand, count) in enumerate(sorted_brands[:10], 1):
+                percentage = (count / total_visits) * 100
+                output += f"{i}. {brand}: {count} kunjungan ({percentage:.1f}%)\n"
+            
+            # Tampilkan berdasarkan tipe mobil
+            output += "\nBerdasarkan Tipe Mobil:\n"
+            for i, (car_type, count) in enumerate(sorted_types[:10], 1):
+                percentage = (count / total_visits) * 100
+                output += f"{i}. {car_type}: {count} kunjungan ({percentage:.1f}%)\n"
+            
+            # Tampilkan berdasarkan jenis mesin
+            output += "\nBerdasarkan Jenis Mesin:\n"
+            engine_names = {
+                'petrol': 'Bensin',
+                'diesel': 'Diesel',
+                'electric': 'Listrik',
+                'hybrid': 'Hybrid',
+                'gas': 'Gas',
+                'other': 'Lainnya',
+                'Tidak Diketahui': 'Tidak Diketahui'
+            }
+            for engine, count in sorted_engines:
+                engine_name = engine_names.get(engine, engine)
+                percentage = (count / total_visits) * 100
+                output += f"- {engine_name}: {count} kunjungan ({percentage:.1f}%)\n"
+            
+            # Tampilkan berdasarkan tahun
+            output += "\nBerdasarkan Tahun Mobil:\n"
+            for year, count in sorted(sorted_years[:8], key=lambda x: x[0], reverse=True):
+                percentage = (count / total_visits) * 100
+                output += f"- {year}: {count} kunjungan ({percentage:.1f}%)\n"
+            
+            # Tampilkan detail mobil individual
+            output += "\nDetail Mobil dengan Kunjungan Tertinggi:\n"
+            for i, car in enumerate(result[:10], 1):
+                engine_name = engine_names.get(car['engine_type'], car['engine_type'] or 'Tidak Diketahui')
+                output += f"{i}. {car['brand_name']} {car['type_name']} ({car['year']}) - {car['number_plate']}\n"
+                output += f"   Jumlah Kunjungan: {car['visit_count']}\n"
+                output += f"   Jenis Mesin: {engine_name}\n"
+                output += f"   Kunjungan Terakhir: {car['last_visit'].strftime('%Y-%m-%d')}\n"
+            
+            # Tambahkan rekomendasi bisnis
+            output += "\nRekomendasi Bisnis:\n"
+            
+            # Rekomendasi berdasarkan merek mobil
+            if sorted_brands:
+                top_brand = sorted_brands[0][0]
+                output += f"1. Fokus pada stok sparepart untuk merek {top_brand} yang memiliki frekuensi kunjungan tertinggi\n"
+            
+            # Rekomendasi berdasarkan tipe mobil
+            if sorted_types:
+                top_type = sorted_types[0][0]
+                output += f"2. Tingkatkan pelatihan teknisi untuk menangani model {top_type} yang paling sering membutuhkan servis\n"
+            
+            # Rekomendasi berdasarkan jenis mesin
+            if 'petrol' in engine_counts and 'diesel' in engine_counts:
+                if engine_counts['petrol'] > engine_counts['diesel']:
+                    output += "3. Prioritaskan layanan untuk mesin bensin yang lebih dominan di bengkel Anda\n"
+                else:
+                    output += "3. Pertimbangkan spesialisasi lebih dalam untuk perawatan mesin diesel yang signifikan\n"
+            
+            # Rekomendasi berdasarkan umur mobil
+            if sorted_years and len(sorted_years) > 1:
+                oldest_years = sorted(year_counts.keys())[:3]
+                if all(int(year) < (date.today().year - 5) for year in oldest_years):
+                    output += f"4. Siapkan lebih banyak stok part untuk mobil tua (tahun {', '.join(oldest_years)})\n"
+                else:
+                    output += "4. Fokuskan pemasaran pada layanan preventive maintenance untuk mobil yang lebih baru\n"
+            
+            output += "5. Pertimbangkan untuk membuat paket servis khusus untuk 3 tipe mobil teratas\n"
+            
+            return output
+            
+        except Exception as e:
+            _logger.error(f"Error analyzing frequent cars: {str(e)}")
+            return f"Error menganalisis data mobil yang sering masuk: {str(e)}"
+
         
-    def _analyze_most_popular_cars(self, cars):
-        """Analyze most popular cars by brand and type"""
-        # Group by brand
-        brands = {}
-        for car in cars:
-            brand_name = car.brand.name
-            if brand_name in brands:
-                brands[brand_name] += 1
+    def _analyze_car_brands(self, date_from, date_to):
+        """Analyze car brands in the database"""
+        try:
+            # Query untuk mendapatkan distribusi merek mobil
+            query = """
+                SELECT 
+                    pb.name as brand_name,
+                    COUNT(DISTINCT pc.id) as car_count,
+                    COUNT(DISTINCT pc.partner_id) as customer_count,
+                    COUNT(DISTINCT so.id) as service_count,
+                    SUM(so.amount_total) as total_revenue
+                FROM 
+                    res_partner_car pc
+                JOIN 
+                    res_partner_car_brand pb ON pc.brand_id = pb.id
+                LEFT JOIN 
+                    sale_order so ON so.partner_car_id = pc.id AND
+                    so.date_order >= %s AND so.date_order <= %s AND
+                    so.state in ('sale', 'done')
+                GROUP BY 
+                    pb.name
+                ORDER BY 
+                    car_count DESC
+            """
+            
+            self.env.cr.execute(query, (date_from, date_to))
+            result = self.env.cr.dictfetchall()
+            
+            if not result:
+                return "Tidak ditemukan data merek mobil dalam database."
+            
+            # Hitung total
+            total_cars = sum(brand['car_count'] for brand in result)
+            total_customers = sum(brand['customer_count'] for brand in result)
+            total_services = sum(brand['service_count'] for brand in result if brand['service_count'])
+            total_revenue = sum(brand['total_revenue'] for brand in result if brand['total_revenue'])
+            
+            # Format output
+            output = f"Analisis Merek Mobil ({date_from.strftime('%Y-%m-%d')} hingga {date_to.strftime('%Y-%m-%d')}):\n\n"
+            output += f"Total Mobil: {total_cars}\n"
+            output += f"Total Pelanggan: {total_customers}\n"
+            output += f"Total Servis: {total_services}\n"
+            output += f"Total Pendapatan: Rp {total_revenue:,.2f}\n\n"
+            
+            # Distribusi merek
+            output += "Distribusi Merek Mobil:\n"
+            for i, brand in enumerate(result[:15], 1):
+                car_percentage = (brand['car_count'] / total_cars) * 100 if total_cars else 0
+                service_count = brand['service_count'] or 0
+                revenue = brand['total_revenue'] or 0
+                
+                output += f"{i}. {brand['brand_name']}:\n"
+                output += f"   - Jumlah Mobil: {brand['car_count']} ({car_percentage:.1f}%)\n"
+                output += f"   - Jumlah Pelanggan: {brand['customer_count']}\n"
+                
+                if service_count:
+                    output += f"   - Jumlah Servis: {service_count}\n"
+                    output += f"   - Pendapatan: Rp {revenue:,.2f}\n"
+                    output += f"   - Rata-rata per Servis: Rp {(revenue/service_count):,.2f}\n"
+                    
+                    # Hitung frekuensi servis
+                    if brand['car_count'] > 0:
+                        service_frequency = service_count / brand['car_count']
+                        output += f"   - Frekuensi Servis per Mobil: {service_frequency:.2f}\n"
+                
+                output += "\n"
+            
+            # Analisis merek premium vs value
+            premium_brands = ['BMW', 'Mercedes-Benz', 'Audi', 'Lexus', 'Jaguar', 'Land Rover', 'Porsche', 'Volvo']
+            volume_brands = ['Toyota', 'Honda', 'Mitsubishi', 'Daihatsu', 'Suzuki', 'Nissan', 'Hyundai', 'Kia']
+            
+            premium_count = sum(brand['car_count'] for brand in result if brand['brand_name'] in premium_brands)
+            volume_count = sum(brand['car_count'] for brand in result if brand['brand_name'] in volume_brands)
+            
+            premium_revenue = sum(brand['total_revenue'] for brand in result if brand['brand_name'] in premium_brands and brand['total_revenue'])
+            volume_revenue = sum(brand['total_revenue'] for brand in result if brand['brand_name'] in volume_brands and brand['total_revenue'])
+            
+            premium_service_count = sum(brand['service_count'] for brand in result if brand['brand_name'] in premium_brands and brand['service_count'])
+            volume_service_count = sum(brand['service_count'] for brand in result if brand['brand_name'] in volume_brands and brand['service_count'])
+            
+            output += "Analisis Segmen Mobil:\n"
+            
+            if premium_count > 0:
+                output += f"- Segmen Premium ({', '.join(premium_brands)}):\n"
+                output += f"  * Jumlah Mobil: {premium_count} ({(premium_count/total_cars*100):.1f}%)\n"
+                
+                if premium_service_count:
+                    output += f"  * Jumlah Servis: {premium_service_count}\n"
+                    output += f"  * Total Pendapatan: Rp {premium_revenue:,.2f}\n"
+                    output += f"  * Rata-rata per Servis: Rp {(premium_revenue/premium_service_count):,.2f}\n"
+            
+            if volume_count > 0:
+                output += f"- Segmen Volume ({', '.join(volume_brands)}):\n"
+                output += f"  * Jumlah Mobil: {volume_count} ({(volume_count/total_cars*100):.1f}%)\n"
+                
+                if volume_service_count:
+                    output += f"  * Jumlah Servis: {volume_service_count}\n"
+                    output += f"  * Total Pendapatan: Rp {volume_revenue:,.2f}\n"
+                    output += f"  * Rata-rata per Servis: Rp {(volume_revenue/volume_service_count):,.2f}\n"
+            
+            # Rekomendasi Bisnis
+            output += "\nRekomendasi Bisnis:\n"
+            
+            # Identifikasi merek dengan revenue tertinggi
+            revenue_sorted = sorted([b for b in result if b['total_revenue']], key=lambda x: x['total_revenue'], reverse=True)
+            if revenue_sorted:
+                top_revenue_brand = revenue_sorted[0]['brand_name']
+                output += f"1. Fokus pada peningkatan layanan untuk merek {top_revenue_brand} yang memberikan pendapatan tertinggi\n"
+            
+            # Identifikasi merek dengan frekuensi servis tertinggi
+            if result:
+                service_freq = [(b['brand_name'], b['service_count']/b['car_count'] if b['car_count'] and b['service_count'] else 0) for b in result]
+                service_freq = [sf for sf in service_freq if sf[1] > 0]
+                
+                if service_freq:
+                    top_freq_brand = sorted(service_freq, key=lambda x: x[1], reverse=True)[0][0]
+                    output += f"2. Analisis penyebab frekuensi kunjungan yang tinggi pada merek {top_freq_brand}\n"
+            
+            # Berdasarkan segmen
+            if premium_count > 0 and volume_count > 0:
+                if premium_count > volume_count:
+                    output += "3. Tingkatkan fasilitas dan layanan premium untuk memenuhi harapan pelanggan segmen atas\n"
+                else:
+                    output += "3. Optimalkan efisiensi operasional untuk menangani volume tinggi dari mobil segmen menengah\n"
+            
+            output += "4. Pertimbangkan pelatihan spesialis merek untuk 3-5 merek mobil teratas\n"
+            output += "5. Evaluasi kebutuhan stok suku cadang berdasarkan distribusi merek saat ini\n"
+            
+            return output
+            
+        except Exception as e:
+            _logger.error(f"Error analyzing car brands: {str(e)}")
+            return f"Error menganalisis data merek mobil: {str(e)}"
+
+    def _analyze_car_types(self, date_from, date_to):
+        """Analyze car types/models in the database"""
+        try:
+            # Query untuk mendapatkan distribusi tipe mobil
+            query = """
+                SELECT 
+                    pb.name as brand_name,
+                    pt.name as type_name,
+                    COUNT(DISTINCT pc.id) as car_count,
+                    COUNT(DISTINCT so.id) as service_count,
+                    SUM(so.amount_total) as total_revenue,
+                    AVG(pc.year::integer) as avg_year
+                FROM 
+                    res_partner_car pc
+                JOIN 
+                    res_partner_car_brand pb ON pc.brand_id = pb.id
+                JOIN 
+                    res_partner_car_type pt ON pc.brand_type = pt.id
+                LEFT JOIN 
+                    sale_order so ON so.partner_car_id = pc.id AND
+                    so.date_order >= %s AND so.date_order <= %s AND
+                    so.state in ('sale', 'done')
+                GROUP BY 
+                    pb.name, pt.name
+                ORDER BY 
+                    car_count DESC
+                LIMIT 30
+            """
+            
+            self.env.cr.execute(query, (date_from, date_to))
+            result = self.env.cr.dictfetchall()
+            
+            if not result:
+                return "Tidak ditemukan data tipe mobil dalam database."
+            
+            # Hitung total
+            total_cars = sum(typ['car_count'] for typ in result)
+            total_services = sum(typ['service_count'] for typ in result if typ['service_count'])
+            total_revenue = sum(typ['total_revenue'] for typ in result if typ['total_revenue'])
+            
+            # Format output
+            output = f"Analisis Tipe Mobil ({date_from.strftime('%Y-%m-%d')} hingga {date_to.strftime('%Y-%m-%d')}):\n\n"
+            output += f"Total Tipe Mobil Unik: {len(result)}\n"
+            output += f"Total Mobil: {total_cars}\n"
+            output += f"Total Servis: {total_services}\n"
+            output += f"Total Pendapatan: Rp {total_revenue:,.2f}\n\n"
+            
+            # Distribusi tipe
+            output += "Top 15 Tipe Mobil berdasarkan Jumlah:\n"
+            for i, typ in enumerate(result[:15], 1):
+                full_type = f"{typ['brand_name']} {typ['type_name']}"
+                car_percentage = (typ['car_count'] / total_cars) * 100 if total_cars else 0
+                service_count = typ['service_count'] or 0
+                revenue = typ['total_revenue'] or 0
+                avg_year = int(typ['avg_year']) if typ['avg_year'] else 'Tidak diketahui'
+                
+                output += f"{i}. {full_type}:\n"
+                output += f"   - Jumlah Mobil: {typ['car_count']} ({car_percentage:.1f}%)\n"
+                output += f"   - Rata-rata Tahun: {avg_year}\n"
+                
+                if service_count:
+                    output += f"   - Jumlah Servis: {service_count}\n"
+                    output += f"   - Pendapatan: Rp {revenue:,.2f}\n"
+                    output += f"   - Rata-rata per Servis: Rp {(revenue/service_count):,.2f}\n"
+                    
+                    # Hitung frekuensi servis
+                    if typ['car_count'] > 0:
+                        service_frequency = service_count / typ['car_count']
+                        output += f"   - Frekuensi Servis per Mobil: {service_frequency:.2f}\n"
+                
+                output += "\n"
+            
+            # Rekomendasi Bisnis
+            output += "Rekomendasi Bisnis:\n"
+            
+            # Top models by service frequency
+            service_freq = [(f"{t['brand_name']} {t['type_name']}", t['service_count']/t['car_count'] if t['car_count'] and t['service_count'] else 0) for t in result]
+            service_freq = [sf for sf in service_freq if sf[1] > 0]
+            
+            if service_freq:
+                top_service_models = sorted(service_freq, key=lambda x: x[1], reverse=True)[:3]
+                output += f"1. Model dengan frekuensi servis tertinggi: {', '.join([m[0] for m in top_service_models])}\n"
+                output += "   Kembangkan paket perawatan khusus untuk model-model ini\n"
+            
+            # Top models by revenue
+            revenue_models = [(f"{t['brand_name']} {t['type_name']}", t['total_revenue']) for t in result if t['total_revenue']]
+            
+            if revenue_models:
+                top_revenue_models = sorted(revenue_models, key=lambda x: x[1], reverse=True)[:3]
+                output += f"2. Model dengan pendapatan tertinggi: {', '.join([m[0] for m in top_revenue_models])}\n"
+                output += "   Tingkatkan keahlian teknisi dan penyediaan suku cadang untuk model-model ini\n"
+            
+            # Age-based recommendations
+            old_models = [t for t in result if t['avg_year'] and int(t['avg_year']) < (date.today().year - 7)]
+            new_models = [t for t in result if t['avg_year'] and int(t['avg_year']) >= (date.today().year - 3)]
+            
+            if old_models:
+                old_models_sorted = sorted(old_models, key=lambda x: x['avg_year'])[:3]
+                output += f"3. Model lama yang memerlukan perhatian khusus: {', '.join([f'{t['brand_name']} {t['type_name']}' for t in old_models_sorted])}\n"
+                output += "   Siapkan stok suku cadang khusus dan layanan peremajaan\n"
+            
+            if new_models:
+                new_models_sorted = sorted(new_models, key=lambda x: x['avg_year'], reverse=True)[:3]
+                output += f"4. Model baru untuk layanan garansi: {', '.join([f'{t['brand_name']} {t['type_name']}' for t in new_models_sorted])}\n"
+                output += "   Kembangkan layanan yang sesuai dengan kebutuhan mobil baru\n"
+            
+            output += "5. Gunakan data distribusi tipe mobil untuk merencanakan stok suku cadang dengan lebih efisien\n"
+            
+            return output
+            
+        except Exception as e:
+            _logger.error(f"Error analyzing car types: {str(e)}")
+            return f"Error menganalisis data tipe mobil: {str(e)}"
+
+    def _analyze_car_years(self, date_from, date_to):
+        """Analyze car age distribution"""
+        try:
+            # Query untuk mendapatkan distribusi umur mobil
+            query = """
+                SELECT 
+                    pc.year,
+                    COUNT(DISTINCT pc.id) as car_count,
+                    COUNT(DISTINCT so.id) as service_count,
+                    SUM(so.amount_total) as total_revenue,
+                    AVG(sol.product_uom_qty) as avg_items_per_service
+                FROM 
+                    res_partner_car pc
+                LEFT JOIN 
+                    sale_order so ON so.partner_car_id = pc.id AND
+                    so.date_order >= %s AND so.date_order <= %s AND
+                    so.state in ('sale', 'done')
+                LEFT JOIN
+                    sale_order_line sol ON sol.order_id = so.id
+                GROUP BY 
+                    pc.year
+                ORDER BY 
+                    pc.year DESC
+            """
+            
+            self.env.cr.execute(query, (date_from, date_to))
+            result = self.env.cr.dictfetchall()
+            
+            if not result:
+                return "Tidak ditemukan data tahun mobil dalam database."
+            
+            # Hitung total
+            current_year = date.today().year
+            total_cars = sum(yr['car_count'] for yr in result)
+            total_services = sum(yr['service_count'] for yr in result if yr['service_count'])
+            total_revenue = sum(yr['total_revenue'] for yr in result if yr['total_revenue'])
+            
+            # Kelompokkan berdasarkan range umur
+            age_groups = {
+                'Baru (0-3 tahun)': {'count': 0, 'service': 0, 'revenue': 0},
+                'Menengah (4-7 tahun)': {'count': 0, 'service': 0, 'revenue': 0},
+                'Tua (8-12 tahun)': {'count': 0, 'service': 0, 'revenue': 0},
+                'Sangat Tua (>12 tahun)': {'count': 0, 'service': 0, 'revenue': 0}
+            }
+            
+            for yr in result:
+                if not yr['year']:
+                    continue
+                    
+                year = int(yr['year'])
+                age = current_year - year
+                
+                if age <= 3:
+                    group = 'Baru (0-3 tahun)'
+                elif age <= 7:
+                    group = 'Menengah (4-7 tahun)'
+                elif age <= 12:
+                    group = 'Tua (8-12 tahun)'
+                else:
+                    group = 'Sangat Tua (>12 tahun)'
+                
+                age_groups[group]['count'] += yr['car_count']
+                age_groups[group]['service'] += yr['service_count'] or 0
+                age_groups[group]['revenue'] += yr['total_revenue'] or 0
+            
+            # Format output
+            output = f"Analisis Umur Mobil ({date_from.strftime('%Y-%m-%d')} hingga {date_to.strftime('%Y-%m-%d')}):\n\n"
+            output += f"Total Mobil: {total_cars}\n"
+            output += f"Total Servis: {total_services}\n"
+            output += f"Total Pendapatan: Rp {total_revenue:,.2f}\n\n"
+            
+            # Distribusi umur
+            output += "Distribusi Berdasarkan Kelompok Umur:\n"
+            for group, data in age_groups.items():
+                if data['count'] > 0:
+                    car_percentage = (data['count'] / total_cars) * 100
+                    revenue_percentage = (data['revenue'] / total_revenue) * 100 if total_revenue else 0
+                    avg_service_per_car = data['service'] / data['count'] if data['count'] else 0
+                    avg_revenue_per_service = data['revenue'] / data['service'] if data['service'] else 0
+                    
+                    output += f"- {group}:\n"
+                    output += f"  * Jumlah Mobil: {data['count']} ({car_percentage:.1f}%)\n"
+                    output += f"  * Jumlah Servis: {data['service']}\n"
+                    if data['service'] > 0:
+                        output += f"  * Pendapatan: Rp {data['revenue']:,.2f} ({revenue_percentage:.1f}%)\n"
+                        output += f"  * Rata-rata Servis per Mobil: {avg_service_per_car:.2f}\n"
+                        output += f"  * Rata-rata Pendapatan per Servis: Rp {avg_revenue_per_service:,.2f}\n"
+                    output += "\n"
+            
+            # Distribusi per tahun
+            output += "Distribusi per Tahun Mobil (10 Tahun Terakhir):\n"
+            recent_years = sorted([yr for yr in result if yr['year'] and int(yr['year']) >= (current_year - 10)], 
+                                key=lambda x: x['year'], reverse=True)
+            
+            for yr in recent_years:
+                year = yr['year']
+                car_percentage = (yr['car_count'] / total_cars) * 100
+                output += f"- {year}: {yr['car_count']} mobil ({car_percentage:.1f}%)\n"
+            
+            # Rekomendasi Bisnis
+            output += "\nRekomendasi Bisnis:\n"
+            
+            # Cek proporsi mobil berdasarkan umur
+            new_car_proportion = age_groups['Baru (0-3 tahun)']['count'] / total_cars if total_cars else 0
+            old_car_proportion = (age_groups['Tua (8-12 tahun)']['count'] + age_groups['Sangat Tua (>12 tahun)']['count']) / total_cars if total_cars else 0
+            
+            if new_car_proportion > 0.4:  # Lebih dari 40% mobil baru
+                output += "1. Fokus pada layanan perawatan berkala dan garansi untuk mobil baru\n"
+                output += "2. Pertimbangkan paket servis preventif untuk mempertahankan kondisi mobil baru\n"
+            elif old_car_proportion > 0.4:  # Lebih dari 40% mobil tua
+                output += "1. Siapkan layanan restorasi dan peremajaan untuk mobil tua\n"
+                output += "2. Tingkatkan stok suku cadang untuk model lama\n"
             else:
-                brands[brand_name] = 1
-        
-        # Group by type
-        types = {}
-        for car in cars:
-            type_name = f"{car.brand.name} {car.brand_type.name}"
-            if type_name in types:
-                types[type_name] += 1
+                output += "1. Seimbangkan layanan untuk berbagai kelompok umur mobil\n"
+            
+            # Analisis profitabilitas berdasarkan umur
+            most_profitable_group = max(age_groups.items(), key=lambda x: x[1]['revenue'])
+            output += f"3. Kelompok umur {most_profitable_group[0]} memberikan pendapatan tertinggi\n"
+            output += "   Optimalkan layanan untuk kelompok ini sambil mempertahankan yang lain\n"
+            
+            # Analisis frekuensi servis
+            highest_frequency_group = max(age_groups.items(), 
+                                        key=lambda x: x[1]['service']/x[1]['count'] if x[1]['count'] else 0)
+            output += f"4. Kelompok umur {highest_frequency_group[0]} memiliki frekuensi servis tertinggi\n"
+            output += "   Analisis kebutuhan servis khusus untuk kelompok ini\n"
+            
+            output += "5. Gunakan data distribusi umur mobil untuk perencanaan kapasitas dan promosi yang ditargetkan\n"
+            
+            return output
+            
+        except Exception as e:
+            _logger.error(f"Error analyzing car years: {str(e)}")
+            return f"Error menganalisis data tahun mobil: {str(e)}"
+
+    def _analyze_car_engines(self, date_from, date_to):
+        """Analyze car engine types"""
+        try:
+            # Query untuk mendapatkan distribusi jenis mesin
+            query = """
+                SELECT 
+                    pc.engine_type,
+                    COUNT(DISTINCT pc.id) as car_count,
+                    COUNT(DISTINCT so.id) as service_count,
+                    SUM(so.amount_total) as total_revenue,
+                    AVG(so.amount_total) as avg_service_value
+                FROM 
+                    res_partner_car pc
+                LEFT JOIN 
+                    sale_order so ON so.partner_car_id = pc.id AND
+                    so.date_order >= %s AND so.date_order <= %s AND
+                    so.state in ('sale', 'done')
+                GROUP BY 
+                    pc.engine_type
+                ORDER BY 
+                    car_count DESC
+            """
+            
+            self.env.cr.execute(query, (date_from, date_to))
+            result = self.env.cr.dictfetchall()
+            
+            if not result:
+                return "Tidak ditemukan data jenis mesin mobil dalam database."
+            
+            # Hitung total
+            total_cars = sum(eng['car_count'] for eng in result)
+            total_services = sum(eng['service_count'] for eng in result if eng['service_count'])
+            total_revenue = sum(eng['total_revenue'] for eng in result if eng['total_revenue'])
+            
+            # Format output
+            output = f"Analisis Jenis Mesin Mobil ({date_from.strftime('%Y-%m-%d')} hingga {date_to.strftime('%Y-%m-%d')}):\n\n"
+            output += f"Total Mobil: {total_cars}\n"
+            output += f"Total Servis: {total_services}\n"
+            output += f"Total Pendapatan: Rp {total_revenue:,.2f}\n\n"
+            
+            # Mapping untuk nama jenis mesin
+            engine_names = {
+                'petrol': 'Bensin',
+                'diesel': 'Diesel',
+                'electric': 'Listrik',
+                'hybrid': 'Hybrid',
+                'gas': 'Gas',
+                'other': 'Lainnya',
+                None: 'Tidak Diketahui'
+            }
+            
+            # Distribusi jenis mesin
+            output += "Distribusi Berdasarkan Jenis Mesin:\n"
+            for eng in result:
+                engine_type = eng['engine_type']
+                engine_name = engine_names.get(engine_type, engine_type)
+                car_percentage = (eng['car_count'] / total_cars) * 100
+                
+                output += f"- {engine_name}:\n"
+                output += f"  * Jumlah Mobil: {eng['car_count']} ({car_percentage:.1f}%)\n"
+                
+                service_count = eng['service_count'] or 0
+                if service_count > 0:
+                    revenue = eng['total_revenue'] or 0
+                    revenue_percentage = (revenue / total_revenue) * 100 if total_revenue else 0
+                    avg_service_value = eng['avg_service_value'] or 0
+                    
+                    output += f"  * Jumlah Servis: {service_count}\n"
+                    output += f"  * Pendapatan: Rp {revenue:,.2f} ({revenue_percentage:.1f}%)\n"
+                    output += f"  * Rata-rata Nilai Servis: Rp {avg_service_value:,.2f}\n"
+                    
+                    # Frekuensi servis
+                    if eng['car_count'] > 0:
+                        service_frequency = service_count / eng['car_count']
+                        output += f"  * Frekuensi Servis per Mobil: {service_frequency:.2f}\n"
+                
+                output += "\n"
+            
+            # Perbandingan nilai servis
+            service_values = [(engine_names.get(eng['engine_type'], eng['engine_type']), eng['avg_service_value']) 
+                            for eng in result if eng['avg_service_value']]
+            
+            if service_values:
+                output += "Perbandingan Nilai Servis Berdasarkan Jenis Mesin:\n"
+                for engine, value in sorted(service_values, key=lambda x: x[1], reverse=True):
+                    output += f"- {engine}: Rp {value:,.2f}\n"
+                
+                output += "\n"
+            
+            # Rekomendasi Bisnis
+            output += "Rekomendasi Bisnis:\n"
+            
+            # Cek proporsi jenis mesin
+            petrol_count = next((eng['car_count'] for eng in result if eng['engine_type'] == 'petrol'), 0)
+            diesel_count = next((eng['car_count'] for eng in result if eng['engine_type'] == 'diesel'), 0)
+            electric_count = next((eng['car_count'] for eng in result if eng['engine_type'] == 'electric'), 0)
+            hybrid_count = next((eng['car_count'] for eng in result if eng['engine_type'] == 'hybrid'), 0)
+            
+            has_significant_petrol = petrol_count > total_cars * 0.2 if total_cars else False
+            has_significant_diesel = diesel_count > total_cars * 0.2 if total_cars else False
+            has_significant_electric = electric_count > total_cars * 0.05 if total_cars else False
+            has_significant_hybrid = hybrid_count > total_cars * 0.05 if total_cars else False
+            
+            if has_significant_petrol:
+                output += "1. Pertahankan fokus pada servis mesin bensin sebagai segmen utama\n"
+            
+            if has_significant_diesel:
+                output += f"2. {'Pertahankan' if has_significant_petrol else 'Tingkatkan'} spesialisasi untuk mesin diesel yang memiliki kebutuhan servis berbeda\n"
+            
+            if has_significant_electric or has_significant_hybrid:
+                output += f"3. Investasikan dalam pelatihan dan peralatan untuk menangani kendaraan {'listrik' if has_significant_electric else ''} {'dan' if has_significant_electric and has_significant_hybrid else ''} {'hybrid' if has_significant_hybrid else ''}\n"
+            
+            # Cek nilai servis tertinggi
+            if service_values:
+                highest_value_engine = max(service_values, key=lambda x: x[1])
+                output += f"4. Kembangkan layanan premium untuk mobil bermesin {highest_value_engine[0]} yang memiliki nilai servis tertinggi\n"
+            
+            # Rekomendasi tambahan
+            output += "5. Sesuaikan stok suku cadang berdasarkan distribusi jenis mesin saat ini\n"
+            output += "6. Lakukan kampanye pemasaran untuk layanan spesifik sesuai jenis mesin dominan\n"
+            
+            return output
+            
+        except Exception as e:
+            _logger.error(f"Error analyzing car engines: {str(e)}")
+            return f"Error menganalisis data jenis mesin mobil: {str(e)}"
+
+    def _analyze_car_colors(self, date_from, date_to):
+        """Analyze car colors distribution"""
+        try:
+            # Query untuk mendapatkan distribusi warna mobil
+            query = """
+                SELECT 
+                    pc.color,
+                    COUNT(DISTINCT pc.id) as car_count,
+                    COUNT(DISTINCT so.id) as service_count,
+                    SUM(so.amount_total) as total_revenue
+                FROM 
+                    res_partner_car pc
+                LEFT JOIN 
+                    sale_order so ON so.partner_car_id = pc.id AND
+                    so.date_order >= %s AND so.date_order <= %s AND
+                    so.state in ('sale', 'done')
+                GROUP BY 
+                    pc.color
+                ORDER BY 
+                    car_count DESC
+            """
+            
+            self.env.cr.execute(query, (date_from, date_to))
+            result = self.env.cr.dictfetchall()
+            
+            if not result:
+                return "Tidak ditemukan data warna mobil dalam database."
+            
+            # Hitung total
+            total_cars = sum(color['car_count'] for color in result)
+            
+            # Format output
+            output = f"Analisis Warna Mobil ({date_from.strftime('%Y-%m-%d')} hingga {date_to.strftime('%Y-%m-%d')}):\n\n"
+            output += f"Total Mobil: {total_cars}\n\n"
+            
+            # Distribusi warna
+            output += "Distribusi Berdasarkan Warna:\n"
+            for color in result:
+                color_name = color['color'] or 'Tidak Diketahui'
+                car_percentage = (color['car_count'] / total_cars) * 100
+                
+                output += f"- {color_name}: {color['car_count']} mobil ({car_percentage:.1f}%)\n"
+            
+            # Insight sederhana
+            output += "\nInsight Tambahan:\n"
+            popular_colors = sorted(result, key=lambda x: x['car_count'], reverse=True)[:3]
+            output += f"- Warna paling populer: {', '.join([c['color'] for c in popular_colors])}\n"
+            
+            # Warna yang paling sering diservis
+            service_freq = [(c['color'], c['service_count']/c['car_count'] if c['car_count'] and c['service_count'] else 0) 
+                            for c in result]
+            service_freq = [sf for sf in service_freq if sf[1] > 0]
+            
+            if service_freq:
+                most_serviced_colors = sorted(service_freq, key=lambda x: x[1], reverse=True)[:3]
+                output += f"- Warna dengan frekuensi servis tertinggi: {', '.join([c[0] for c in most_serviced_colors])}\n"
+            
+            return output
+            
+        except Exception as e:
+            _logger.error(f"Error analyzing car colors: {str(e)}")
+            return f"Error menganalisis data warna mobil: {str(e)}"
+
+    def _analyze_car_transmissions(self, date_from, date_to):
+        """Analyze car transmission types"""
+        try:
+            # Query untuk mendapatkan distribusi jenis transmisi
+            query = """
+                SELECT 
+                    pct.name as transmission_name,
+                    COUNT(DISTINCT pc.id) as car_count,
+                    COUNT(DISTINCT so.id) as service_count,
+                    SUM(so.amount_total) as total_revenue
+                FROM 
+                    res_partner_car pc
+                JOIN
+                    res_partner_car_transmission pct ON pc.transmission = pct.id
+                LEFT JOIN 
+                    sale_order so ON so.partner_car_id = pc.id AND
+                    so.date_order >= %s AND so.date_order <= %s AND
+                    so.state in ('sale', 'done')
+                GROUP BY 
+                    pct.name
+                ORDER BY 
+                    car_count DESC
+            """
+            
+            self.env.cr.execute(query, (date_from, date_to))
+            result = self.env.cr.dictfetchall()
+            
+            if not result:
+                return "Tidak ditemukan data jenis transmisi mobil dalam database."
+            
+            # Hitung total
+            total_cars = sum(trans['car_count'] for trans in result)
+            total_services = sum(trans['service_count'] for trans in result if trans['service_count'])
+            total_revenue = sum(trans['total_revenue'] for trans in result if trans['total_revenue'])
+            
+            # Format output
+            output = f"Analisis Jenis Transmisi Mobil ({date_from.strftime('%Y-%m-%d')} hingga {date_to.strftime('%Y-%m-%d')}):\n\n"
+            output += f"Total Mobil: {total_cars}\n"
+            output += f"Total Servis: {total_services}\n"
+            output += f"Total Pendapatan: Rp {total_revenue:,.2f}\n\n"
+            
+            # Distribusi jenis transmisi
+            output += "Distribusi Berdasarkan Jenis Transmisi:\n"
+            for trans in result:
+                trans_name = trans['transmission_name'] or 'Tidak Diketahui'
+                car_percentage = (trans['car_count'] / total_cars) * 100
+                
+                output += f"- {trans_name}:\n"
+                output += f"  * Jumlah Mobil: {trans['car_count']} ({car_percentage:.1f}%)\n"
+                
+                service_count = trans['service_count'] or 0
+                if service_count > 0:
+                    revenue = trans['total_revenue'] or 0
+                    revenue_percentage = (revenue / total_revenue) * 100 if total_revenue else 0
+                    avg_service_value = revenue / service_count
+                    
+                    output += f"  * Jumlah Servis: {service_count}\n"
+                    output += f"  * Pendapatan: Rp {revenue:,.2f} ({revenue_percentage:.1f}%)\n"
+                    output += f"  * Rata-rata Nilai Servis: Rp {avg_service_value:,.2f}\n"
+                    
+                    # Frekuensi servis
+                    if trans['car_count'] > 0:
+                        service_frequency = service_count / trans['car_count']
+                        output += f"  * Frekuensi Servis per Mobil: {service_frequency:.2f}\n"
+                
+                output += "\n"
+            
+            # Insight sederhana
+            output += "Insight Tambahan:\n"
+            
+            # Proporsi manual vs automatic
+            manual_count = sum(t['car_count'] for t in result if 'manual' in t['transmission_name'].lower())
+            auto_count = sum(t['car_count'] for t in result if any(a in t['transmission_name'].lower() for a in ['auto', 'cvt', 'dct']))
+            
+            manual_pct = (manual_count / total_cars) * 100 if total_cars else 0
+            auto_pct = (auto_count / total_cars) * 100 if total_cars else 0
+            
+            output += f"- Proporsi Transmisi Manual: {manual_pct:.1f}%\n"
+            output += f"- Proporsi Transmisi Otomatis: {auto_pct:.1f}%\n"
+            
+            # Rekomendasi sederhana
+            output += "\nRekomendasi:\n"
+            if auto_pct > 70:
+                output += "- Fokus pada pelatihan dan peralatan untuk transmisi otomatis yang dominan\n"
+            elif manual_pct > 70:
+                output += "- Pertahankan keahlian untuk servis transmisi manual yang masih dominan\n"
             else:
-                types[type_name] = 1
-        
-        # Sort results
-        top_brands = sorted(brands.items(), key=lambda x: x[1], reverse=True)[:10]
-        top_types = sorted(types.items(), key=lambda x: x[1], reverse=True)[:10]
-        
-        result = f"Analisis Mobil Terpopuler (Total: {len(cars)} mobil):\n\n"
-        
-        # Top brands
-        result += "Merek Terpopuler:\n"
-        for i, (brand, count) in enumerate(top_brands, 1):
-            percentage = (count / len(cars)) * 100
-            result += f"{i}. {brand}: {count} mobil ({percentage:.1f}%)\n"
-        
-        # Top types
-        result += "\nTipe Terpopuler:\n"
-        for i, (type_name, count) in enumerate(top_types, 1):
-            percentage = (count / len(cars)) * 100
-            result += f"{i}. {type_name}: {count} mobil ({percentage:.1f}%)\n"
-        
-        return result
+                output += "- Pertahankan kemampuan servis untuk kedua jenis transmisi\n"
+            
+            return output
+            
+        except Exception as e:
+            _logger.error(f"Error analyzing car transmissions: {str(e)}")
+            return f"Error menganalisis data jenis transmisi mobil: {str(e)}"
+
+    def _analyze_car_services(self, date_from, date_to):
+        """Analyze car service patterns and most common services"""
+        try:
+            # Query untuk mendapatkan layanan yang paling umum
+            query = """
+                SELECT 
+                    p.name as service_name,
+                    p.id as product_id,
+                    COUNT(DISTINCT so.id) as order_count,
+                    SUM(sol.product_uom_qty) as quantity,
+                    SUM(sol.price_subtotal) as total_revenue,
+                    COUNT(DISTINCT so.partner_car_id) as car_count
+                FROM 
+                    sale_order_line sol
+                JOIN
+                    product_product p ON sol.product_id = p.id
+                JOIN
+                    product_template pt ON p.product_tmpl_id = pt.id
+                JOIN
+                    sale_order so ON sol.order_id = so.id
+                WHERE 
+                    so.date_order >= %s AND
+                    so.date_order <= %s AND
+                    so.state in ('sale', 'done') AND
+                    so.partner_car_id IS NOT NULL AND
+                    pt.type = 'service'
+                GROUP BY 
+                    p.name, p.id
+                ORDER BY 
+                    order_count DESC
+                LIMIT 20
+            """
+            
+            self.env.cr.execute(query, (date_from, date_to))
+            service_result = self.env.cr.dictfetchall()
+            
+            # Query untuk pola servis berdasarkan jenis mobil
+            car_service_query = """
+                SELECT 
+                    pb.name as brand_name,
+                    pt.name as type_name,
+                    COUNT(DISTINCT so.id) as service_count,
+                    AVG(so.amount_total) as avg_service_value,
+                    SUM(so.amount_total) as total_revenue
+                FROM 
+                    sale_order so
+                JOIN
+                    res_partner_car pc ON so.partner_car_id = pc.id
+                JOIN
+                    res_partner_car_brand pb ON pc.brand = pb.id
+                JOIN
+                    res_partner_car_type pt ON pc.brand_type = pt.id
+                WHERE 
+                    so.date_order >= %s AND
+                    so.date_order <= %s AND
+                    so.state in ('sale', 'done')
+                GROUP BY 
+                    pb.name, pt.name
+                ORDER BY 
+                    service_count DESC
+                LIMIT 15
+            """
+            
+            self.env.cr.execute(car_service_query, (date_from, date_to))
+            car_service_result = self.env.cr.dictfetchall()
+            
+            # Format output
+            output = f"Analisis Layanan Servis Mobil ({date_from.strftime('%Y-%m-%d')} hingga {date_to.strftime('%Y-%m-%d')}):\n\n"
+            
+            # Layanan paling umum
+            if service_result:
+                total_service_orders = sum(service['order_count'] for service in service_result)
+                total_service_revenue = sum(service['total_revenue'] for service in service_result)
+                
+                output += "Layanan Servis Paling Umum:\n"
+                for i, service in enumerate(service_result[:10], 1):
+                    order_percentage = (service['order_count'] / total_service_orders) * 100
+                    revenue_percentage = (service['total_revenue'] / total_service_revenue) * 100
+                    
+                    output += f"{i}. {service['service_name']}:\n"
+                    output += f"   * Jumlah Order: {service['order_count']} ({order_percentage:.1f}%)\n"
+                    output += f"   * Mobil Terlayani: {service['car_count']}\n"
+                    output += f"   * Total Revenue: Rp {service['total_revenue']:,.2f} ({revenue_percentage:.1f}%)\n"
+                    output += f"   * Rata-rata per Order: Rp {(service['total_revenue']/service['order_count']):,.2f}\n"
+                    output += "\n"
+            else:
+                output += "Tidak ditemukan data layanan servis dalam periode yang ditentukan.\n\n"
+            
+            # Servis berdasarkan jenis mobil
+            if car_service_result:
+                output += "Pola Servis Berdasarkan Jenis Mobil:\n"
+                for i, car_service in enumerate(car_service_result, 1):
+                    car_type = f"{car_service['brand_name']} {car_service['type_name']}"
+                    
+                    output += f"{i}. {car_type}:\n"
+                    output += f"   * Jumlah Servis: {car_service['service_count']}\n"
+                    output += f"   * Total Revenue: Rp {car_service['total_revenue']:,.2f}\n"
+                    output += f"   * Rata-rata Nilai Servis: Rp {car_service['avg_service_value']:,.2f}\n"
+                    output += "\n"
+            
+            # Rekomendasi
+            output += "Rekomendasi Bisnis:\n"
+            
+            if service_result:
+                top_services = service_result[:3]
+                output += f"1. Tingkatkan fokus pada layanan utama: {', '.join([s['service_name'] for s in top_services])}\n"
+                output += "2. Pertimbangkan paket bundling untuk layanan yang sering dilakukan bersama\n"
+                
+                # Cek layanan dengan margin tinggi
+                high_value_services = sorted(service_result, key=lambda x: x['total_revenue']/x['order_count'], reverse=True)[:3]
+                output += f"3. Promosikan layanan dengan nilai tinggi: {', '.join([s['service_name'] for s in high_value_services])}\n"
+            
+            if car_service_result:
+                top_car_types = car_service_result[:3]
+                output += f"4. Tingkatkan spesialisasi untuk jenis mobil yang sering diservis: {', '.join([f'{cs['brand_name']} {cs['type_name']}' for cs in top_car_types])}\n"
+                
+                # Cek mobil dengan nilai servis tinggi
+                high_value_cars = sorted(car_service_result, key=lambda x: x['avg_service_value'], reverse=True)[:3]
+                output += f"5. Kembangkan layanan premium untuk mobil dengan nilai servis tinggi: {', '.join([f'{cs['brand_name']} {cs['type_name']}' for cs in high_value_cars])}\n"
+            
+            output += "6. Evaluasi layanan yang jarang digunakan dan pertimbangkan untuk meningkatkan promosi atau menghentikannya\n"
+            
+            return output
+            
+        except Exception as e:
+            _logger.error(f"Error analyzing car services: {str(e)}")
+            return f"Error menganalisis data layanan servis mobil: {str(e)}"
+
+    def _analyze_car_revenue(self, date_from, date_to):
+        """Analyze revenue from car services"""
+        try:
+            # Query untuk mendapatkan pendapatan dari servis mobil
+            query = """
+                SELECT 
+                    date_trunc('month', so.date_order)::date as month,
+                    COUNT(DISTINCT so.id) as order_count,
+                    SUM(so.amount_total) as total_revenue,
+                    COUNT(DISTINCT so.partner_car_id) as car_count,
+                    COUNT(DISTINCT so.partner_id) as customer_count
+                FROM 
+                    sale_order so
+                WHERE 
+                    so.date_order >= %s AND
+                    so.date_order <= %s AND
+                    so.state in ('sale', 'done') AND
+                    so.partner_car_id IS NOT NULL
+                GROUP BY 
+                    date_trunc('month', so.date_order)
+                ORDER BY 
+                    month
+            """
+            
+            self.env.cr.execute(query, (date_from, date_to))
+            monthly_result = self.env.cr.dictfetchall()
+            
+            # Query pendapatan berdasarkan merek dan tipe mobil
+            brand_query = """
+                SELECT 
+                    pb.name as brand_name,
+                    pt.name as type_name,
+                    COUNT(DISTINCT so.id) as order_count,
+                    SUM(so.amount_total) as total_revenue,
+                    AVG(so.amount_total) as avg_revenue
+                FROM 
+                    sale_order so
+                JOIN
+                    res_partner_car pc ON so.partner_car_id = pc.id
+                JOIN
+                    res_partner_car_brand pb ON pc.brand = pb.id
+                JOIN
+                    res_partner_car_type pt ON pc.brand_type = pt.id
+                WHERE 
+                    so.date_order >= %s AND
+                    so.date_order <= %s AND
+                    so.state in ('sale', 'done')
+                GROUP BY 
+                    pb.name, pt.name
+                ORDER BY 
+                    total_revenue DESC
+                LIMIT 20
+            """
+            
+            self.env.cr.execute(brand_query, (date_from, date_to))
+            brand_result = self.env.cr.dictfetchall()
+            
+            # Format output
+            output = f"Analisis Pendapatan Servis Mobil ({date_from.strftime('%Y-%m-%d')} hingga {date_to.strftime('%Y-%m-%d')}):\n\n"
+            
+            # Ringkasan umum
+            if monthly_result:
+                total_orders = sum(month['order_count'] for month in monthly_result)
+                total_revenue = sum(month['total_revenue'] for month in monthly_result)
+                total_unique_cars = sum(month['car_count'] for month in monthly_result)
+                total_customers = sum(month['customer_count'] for month in monthly_result)
+                
+                output += "Ringkasan Pendapatan:\n"
+                output += f"- Total Order Servis: {total_orders}\n"
+                output += f"- Total Pendapatan: Rp {total_revenue:,.2f}\n"
+                output += f"- Mobil Unik Diservis: {total_unique_cars}\n"
+                output += f"- Pelanggan Unik: {total_customers}\n"
+                output += f"- Rata-rata Nilai per Order: Rp {(total_revenue/total_orders):,.2f}\n\n"
+                
+                # Tren bulanan
+                output += "Tren Pendapatan Bulanan:\n"
+                for month in monthly_result:
+                    month_name = month['month'].strftime('%B %Y')
+                    revenue = month['total_revenue']
+                    orders = month['order_count']
+                    
+                    output += f"- {month_name}:\n"
+                    output += f"  * Order: {orders}\n"
+                    output += f"  * Pendapatan: Rp {revenue:,.2f}\n"
+                    output += f"  * Rata-rata per Order: Rp {(revenue/orders):,.2f}\n"
+                    output += f"  * Mobil Unik: {month['car_count']}\n"
+                    output += f"  * Pelanggan Unik: {month['customer_count']}\n\n"
+                
+                # Analisis tren
+                if len(monthly_result) > 1:
+                    first_month = monthly_result[0]
+                    last_month = monthly_result[-1]
+                    
+                    revenue_change = ((last_month['total_revenue'] - first_month['total_revenue']) / first_month['total_revenue']) * 100
+                    order_change = ((last_month['order_count'] - first_month['order_count']) / first_month['order_count']) * 100
+                    
+                    trend_direction = "naik" if revenue_change > 0 else "turun"
+                    output += f"Analisis Tren: Pendapatan {trend_direction} {abs(revenue_change):.1f}% dari awal hingga akhir periode\n\n"
+            else:
+                output += "Tidak ditemukan data pendapatan dalam periode yang ditentukan.\n\n"
+            
+            # Pendapatan berdasarkan merek/tipe
+            if brand_result:
+                output += "Pendapatan Berdasarkan Merek dan Tipe Mobil:\n"
+                for i, brand in enumerate(brand_result[:10], 1):
+                    car_type = f"{brand['brand_name']} {brand['type_name']}"
+                    
+                    output += f"{i}. {car_type}:\n"
+                    output += f"   * Order: {brand['order_count']}\n"
+                    output += f"   * Total Pendapatan: Rp {brand['total_revenue']:,.2f}\n"
+                    output += f"   * Rata-rata per Order: Rp {brand['avg_revenue']:,.2f}\n\n"
+            
+            # Rekomendasi bisnis
+            output += "Rekomendasi Bisnis:\n"
+            
+            if monthly_result and len(monthly_result) > 1:
+                if revenue_change > 10:
+                    output += "1. Pertahankan strategi yang telah meningkatkan pendapatan secara signifikan\n"
+                elif revenue_change < -10:
+                    output += "1. Lakukan evaluasi penyebab penurunan pendapatan dan implementasikan strategi pemulihan\n"
+                else:
+                    output += "1. Tingkatkan strategi pemasaran dan cross-selling untuk mendorong pertumbuhan pendapatan\n"
+            
+            if brand_result:
+                top_revenue_cars = brand_result[:3]
+                output += f"2. Fokus pada mobil dengan pendapatan tertinggi: {', '.join([f'{b['brand_name']} {b['type_name']}' for b in top_revenue_cars])}\n"
+                
+                top_avg_cars = sorted(brand_result, key=lambda x: x['avg_revenue'], reverse=True)[:3]
+                output += f"3. Kembangkan layanan premium untuk mobil dengan nilai servis tinggi: {', '.join([f'{b['brand_name']} {b['type_name']}' for b in top_avg_cars])}\n"
+            
+            output += "4. Implementasikan program loyalitas untuk meningkatkan frekuensi kunjungan pelanggan\n"
+            output += "5. Evaluasi layanan bernilai rendah dan cari peluang untuk meningkatkan nilai atau mengurangi biaya\n"
+            output += "6. Pantau tren pendapatan bulanan dan sesuaikan strategi pemasaran berdasarkan pola musiman\n"
+            
+            return output
+            
+        except Exception as e:
+            _logger.error(f"Error analyzing car revenue: {str(e)}")
+            return f"Error menganalisis pendapatan servis mobil: {str(e)}"
+
+    def _get_general_car_statistics(self, date_from, date_to):
+        """Get general statistics about customer cars"""
+        try:
+            # Query data mobil
+            cars = self.env['res.partner.car'].search([])
+            
+            if not cars:
+                return "Tidak ditemukan data mobil dalam database."
+            
+            # Data kunjungan servis
+            service_query = """
+                SELECT 
+                    COUNT(DISTINCT so.id) as service_count,
+                    COUNT(DISTINCT so.partner_car_id) as serviced_cars,
+                    COUNT(DISTINCT so.partner_id) as customers_count,
+                    SUM(so.amount_total) as total_revenue
+                FROM 
+                    sale_order so
+                WHERE 
+                    so.date_order >= %s AND
+                    so.date_order <= %s AND
+                    so.state in ('sale', 'done') AND
+                    so.partner_car_id IS NOT NULL
+            """
+            
+            self.env.cr.execute(service_query, (date_from, date_to))
+            service_data = self.env.cr.dictfetchone()
+            
+            # Format output
+            output = f"Statistik Umum Mobil Pelanggan ({date_from.strftime('%Y-%m-%d')} hingga {date_to.strftime('%Y-%m-%d')}):\n\n"
+            
+            # Statistik mobil
+            brands = self.env['res.partner.car.brand'].search([])
+            types = self.env['res.partner.car.type'].search([])
+            
+            output += "Statistik Database Mobil:\n"
+            output += f"- Total Mobil Terdaftar: {len(cars)}\n"
+            output += f"- Total Merek: {len(brands)}\n"
+            output += f"- Total Tipe/Model: {len(types)}\n"
+            
+            # Get distribution by brand
+            brand_distribution = {}
+            for car in cars:
+                brand_name = car.brand.name
+                if brand_name in brand_distribution:
+                    brand_distribution[brand_name] += 1
+                else:
+                    brand_distribution[brand_name] = 1
+            
+            # Top brands
+            top_brands = sorted(brand_distribution.items(), key=lambda x: x[1], reverse=True)[:5]
+            output += f"- Top 5 Merek: {', '.join([f'{b[0]} ({b[1]})' for b in top_brands])}\n"
+            
+            # Engine types
+            engine_distribution = {}
+            for car in cars:
+                engine_type = car.engine_type or 'unknown'
+                if engine_type in engine_distribution:
+                    engine_distribution[engine_type] += 1
+                else:
+                    engine_distribution[engine_type] = 1
+            
+            # Map engine types to readable names
+            engine_names = {
+                'petrol': 'Bensin',
+                'diesel': 'Diesel',
+                'electric': 'Listrik',
+                'hybrid': 'Hybrid',
+                'gas': 'Gas',
+                'other': 'Lainnya',
+                'unknown': 'Tidak Diketahui'
+            }
+            
+            # Format engine distribution
+            engine_dist_formatted = []
+            for engine, count in engine_distribution.items():
+                engine_name = engine_names.get(engine, engine)
+                percentage = (count / len(cars)) * 100
+                engine_dist_formatted.append(f"{engine_name}: {count} ({percentage:.1f}%)")
+            
+            output += f"- Distribusi Jenis Mesin: {', '.join(engine_dist_formatted)}\n"
+            
+            # Year distribution
+            current_year = date.today().year
+            new_cars = len([car for car in cars if car.year and int(car.year) >= (current_year - 3)])
+            old_cars = len([car for car in cars if car.year and int(car.year) < (current_year - 7)])
+            
+            new_cars_pct = (new_cars / len(cars)) * 100 if cars else 0
+            old_cars_pct = (old_cars / len(cars)) * 100 if cars else 0
+            
+            output += f"- Mobil Baru (<= 3 tahun): {new_cars} ({new_cars_pct:.1f}%)\n"
+            output += f"- Mobil Tua (> 7 tahun): {old_cars} ({old_cars_pct:.1f}%)\n"
+            
+            # Servis data
+            if service_data and service_data['service_count']:
+                output += "\nStatistik Servis:\n"
+                output += f"- Total Servis: {service_data['service_count']}\n"
+                output += f"- Mobil Unik Diservis: {service_data['serviced_cars']}\n"
+                output += f"- Pelanggan Unik: {service_data['customers_count']}\n"
+                output += f"- Total Pendapatan: Rp {service_data['total_revenue']:,.2f}\n"
+                output += f"- Rata-rata per Servis: Rp {(service_data['total_revenue']/service_data['service_count']):,.2f}\n"
+                
+                # Calculate service rate
+                service_rate = (service_data['serviced_cars'] / len(cars)) * 100 if cars else 0
+                output += f"- Tingkat Servis: {service_rate:.1f}% mobil telah diservis dalam periode ini\n"
+            
+            # Basic recommendations
+            output += "\nRekomendasi Umum:\n"
+            
+            if cars:
+                output += "1. Gunakan database mobil pelanggan untuk personalisisasi layanan dan komunikasi\n"
+                
+                if top_brands:
+                    output += f"2. Pertahankan stok suku cadang untuk merek {', '.join([b[0] for b in top_brands[:3]])}\n"
+                
+                if new_cars_pct > 30:
+                    output += "3. Tingkatkan layanan garansi dan perawatan berkala untuk segmen mobil baru\n"
+                
+                if old_cars_pct > 30:
+                    output += "4. Siapkan program perawatan khusus untuk mobil berusia >7 tahun\n"
+                
+                if service_data and service_data['service_count'] and service_rate < 50:
+                    output += "5. Implementasikan program retensi untuk meningkatkan tingkat servis mobil terdaftar\n"
+                
+                output += "6. Lakukan analisis servis yang lebih mendalam untuk mengidentifikasi pola dan peluang\n"
+            
+            return output
+            
+        except Exception as e:
+            _logger.error(f"Error getting general car statistics: {str(e)}")
+            return f"Error mendapatkan statistik umum mobil: {str(e)}"
     
     def _analyze_car_engines(self, cars):
         """Analyze cars by engine type"""
