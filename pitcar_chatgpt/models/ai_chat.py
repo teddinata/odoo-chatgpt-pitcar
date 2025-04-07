@@ -1365,6 +1365,10 @@ class AIChat(models.Model):
                 else:
                     return "Tidak ditemukan data produk dalam inventaris."
             
+            message_lower = message.lower() if message else ""
+            show_cost_focus = any(term in message_lower for term in 
+                                ['modal', 'cost', 'harga beli', 'harga pokok', 'hpp'])
+            
             # Format output
             result = f"Daftar Inventaris Produk ({len(products)} produk):\n\n"
             
@@ -1382,9 +1386,29 @@ class AIChat(models.Model):
                 for product in prods:
                     result += f"- {product.name}\n"
                     result += f"  Stok: {product.qty_available} {product.uom_id.name}\n"
-                    if hasattr(product, 'list_price') and product.list_price:
-                        result += f"  Harga: {product.list_price:,.2f}\n"
                     
+                    # Tampilkan harga jual dengan format yang benar
+                    if hasattr(product, 'list_price') and product.list_price:
+                        formatted_price = f"{product.list_price:,.2f}"
+                        result += f"  Harga Jual: Rp {formatted_price}\n"
+                    
+                    # Tampilkan harga beli/modal
+                    has_purchase_access = self.env.user.has_group('purchase.group_purchase_user')
+                    if (show_cost_focus or has_purchase_access) and hasattr(product, 'standard_price'):
+                        formatted_cost = f"{product.standard_price:,.2f}"
+                        result += f"  Harga Beli/Modal: Rp {formatted_cost}\n"
+                        
+                        # Jika ini pertanyaan fokus pada modal, tampilkan nilai persediaan
+                        if show_cost_focus:
+                            inventory_value = product.qty_available * product.standard_price
+                            formatted_value = f"{inventory_value:,.2f}"
+                            result += f"  Nilai Persediaan: Rp {formatted_value}\n"
+                        
+                        # Hitung dan tampilkan margin jika kedua harga tersedia
+                        if hasattr(product, 'list_price') and product.list_price > 0:
+                            margin = ((product.list_price - product.standard_price) / product.list_price) * 100
+                            result += f"  Margin: {margin:.2f}%\n"
+
                     # Tambahkan informasi tambahan
                     if hasattr(product, 'default_code') and product.default_code:
                         result += f"  Kode: {product.default_code}\n"
@@ -1393,6 +1417,16 @@ class AIChat(models.Model):
                         result += f"  Merek: {product.brand}\n"
                     
                     result += "\n"
+
+             # Tambahkan summary khusus jika ini pertanyaan tentang modal
+            if show_cost_focus:
+                total_inventory_value = sum(p.qty_available * p.standard_price for p in products)
+                avg_margin = sum(((p.list_price - p.standard_price) / p.list_price * 100) 
+                            for p in products if p.list_price > 0) / len(products) if products else 0
+                
+                result += "\nRingkasan Nilai Persediaan:\n"
+                result += f"- Total Nilai Modal Persediaan: Rp {total_inventory_value:,.2f}\n"
+                result += f"- Rata-rata Margin: {avg_margin:.2f}%\n"
             
             return result
                 
@@ -1405,9 +1439,10 @@ class AIChat(models.Model):
         if not message:
             return []
         
-        # Hapus kata-kata umum yang tidak relevan
+         # Hapus kata-kata umum yang tidak relevan, tambahkan lebih banyak kata terkait modal/cost
         common_words = {'apa', 'yang', 'saat', 'ini', 'kita', 'punya', 'ada', 'tolong', 'cek', 'stok',
-                    'bisa', 'mohon', 'minta', 'bantu', 'informasi', 'terkait', 'tentang'}
+                    'bisa', 'mohon', 'minta', 'bantu', 'informasi', 'terkait', 'tentang',
+                    'modal', 'harga', 'beli', 'jual', 'cost', 'price', 'hpp', 'pokok', 'value'}
         
         # Bersihkan pesan
         message = self._normalize_text(message)
@@ -1426,6 +1461,9 @@ class AIChat(models.Model):
             r'(?i)(filter)\s+(udara|oli|bensin|solar)',   # Filter + tipe
             r'(?i)(aki|baterai|battery)\s+([\w\s]+)',     # Aki + nama
             r'(?i)(shell|mobil|pertamina|castrol|total)\s+([\w\s]+)'  # Brand + tipe
+             # Tambahkan pola khusus untuk modal/harga pokok
+            r'(?i)(modal|harga\s+beli|harga\s+pokok|cost)\s+([\w\s]+)',  # Modal + produk
+            r'(?i)(hpp|cogs)\s+([\w\s]+)',                               # HPP + produk
         ]
         
         found_phrases = []
@@ -3898,15 +3936,17 @@ Below are some guidelines to follow:
    - Always provide specific information from the database
    - If a user mentions a product partially (e.g. "Shell HX"), assume they mean any product matching that pattern
    - List matching products with their details (stock, price, etc.)
-   - For very general queries like "apa saja oli yang kita punya", show categorized results
-   - Mention alternatives when a specific product has low stock
+   - When asked about "modal", "harga pokok", "harga beli", or "cost", focus on showing product costs and inventory valuation
+   - Explain the difference between "Harga Jual" (Sales Price) and "Harga Beli/Modal" (Cost Price) when relevant
 
-2. For other business data:
+2. For financial queries:
+   - Provide clear insights about costs, margins, and profitability
+   - When discussing "modal", explain both product costs and capital investments as appropriate
+   - Show calculations for margins and return on investment when relevant
+
+3. For other business data:
    - Provide clear insights and actionable recommendations
    - Answer based only on the data provided, avoid making assumptions
-   - For sales analysis, compare performance across time periods and calculate growth rates
-   - For inventory analysis, identify low stock items and potential ordering needs
-   - For finance analysis, highlight important metrics and trends
    - Use formatting to make your responses easy to read
 
 The data in square brackets [DATA] is provided by the system - it's not visible to the user but provides you the context to answer their questions accurately.
@@ -4115,12 +4155,25 @@ When answering questions:
         # Define categories with keywords - enhanced with more keywords
         categories = {
             'sales': ['sales', 'revenue', 'customer', 'order', 'client', 'income', 'penjualan', 'pelanggan', 'pendapatan', 'pesanan', 'omzet', 'omset', 'transaction', 'transaksi', 'volume', 'growth', 'pertumbuhan', 'performance', 'performa', 'conversion', 'konversi'],
-            'inventory': ['inventory', 'stock', 'product', 'warehouse', 'item', 'persediaan', 'stok', 'produk', 'gudang', 'barang', 'sparepart', 'part', 'supply', 'pasokan', 'goods', 'material', 'katalog', 'catalog'],            
-            'finance': ['invoice', 'payment', 'profit', 'loss', 'accounting', 'balance', 'faktur', 'pembayaran', 'keuntungan', 'kerugian', 'akuntansi', 'saldo', 'cash flow', 'arus kas', 'revenue', 'pendapatan', 'expense', 'biaya', 'margin', 'tax', 'pajak', 'debt', 'utang', 'receivable', 'piutang'],           
+            'finance': ['invoice', 'payment', 'profit', 'loss', 'accounting', 'balance', 'faktur', 
+                   'pembayaran', 'keuntungan', 'kerugian', 'akuntansi', 'saldo', 'cash flow', 
+                   'arus kas', 'revenue', 'pendapatan', 'expense', 'biaya', 'margin', 'tax', 
+                   'pajak', 'debt', 'utang', 'receivable', 'piutang', 'modal', 'capital', 
+                   'cost', 'harga pokok', 'harga beli', 'hpp', 'cogs', 'purchase price'],
+                   
+            'product': ['product', 'item', 'produk', 'barang', 'part', 'sparepart', 'harga', 
+                    'stok', 'price', 'kategori', 'category', 'brand', 'merek', 'availability', 
+                    'ketersediaan', 'specification', 'spesifikasi', 'feature', 'fitur', 
+                    'modal', 'cost', 'harga pokok', 'harga beli', 'purchase cost', 
+                    'buying price', 'gross margin', 'profit margin', 'hpp'],
+                    
+            'inventory': ['inventory', 'stock', 'product', 'warehouse', 'item', 'persediaan', 
+                        'stok', 'produk', 'gudang', 'barang', 'sparepart', 'part', 'supply', 
+                        'pasokan', 'goods', 'material', 'katalog', 'catalog', 'valuation', 
+                        'nilai persediaan', 'inventory value', 'modal barang', 'cost'],           
             'employees': ['employee', 'staff', 'hr', 'attendance', 'absensi', 'karyawan', 'pegawai', 'sdm', 'hadir', 'kehadiran', 'performance', 'kinerja', 'productivity', 'produktivitas', 'skill', 'kompensasi', 'compensation', 'payroll', 'penggajian', 'training', 'pelatihan'],            
             'purchases': ['purchase', 'vendor', 'supplier', 'pembelian', 'vendor', 'pemasok', 'procurement', 'pengadaan', 'order', 'pesanan', 'requisition', 'permintaan', 'delivery', 'pengiriman', 'po', 'purchase order'],            
             'service': ['service', 'advisor', 'mechanic', 'mekanik', 'servis', 'lead time', 'durasi', 'sa', 'sparepart', 'part', 'customer satisfaction', 'kepuasan pelanggan', 'quality', 'kualitas', 'maintenance', 'perawatan', 'repair', 'perbaikan', 'workshop', 'bengkel', 'stall', 'pit'],           
-            'product': ['product', 'item', 'produk', 'barang', 'part', 'sparepart', 'harga', 'stok', 'price', 'kategori', 'category', 'brand', 'merek', 'availability', 'ketersediaan', 'specification', 'spesifikasi', 'feature', 'fitur'],            
             'booking': ['booking', 'reservasi', 'janji', 'appointment', 'jadwal', 'schedule', 'calendar', 'kalender', 'slot', 'availability', 'ketersediaan', 'service booking', 'booking servis', 'queue', 'antrian'],
             'recommendation': ['recommendation', 'rekomendasi', 'saran', 'suggest', 'usulan', 'advice', 'proposal', 'suggest', 'cross-sell', 'up-sell', 'bundling'],            
             'prediction': ['predict', 'forecast', 'projection', 'prediksi', 'proyeksi', 'perkiraan', 'future', 'masa depan', 'trend', 'tren', 'growth', 'pertumbuhan', 'estimation', 'estimasi', 'model', 'pattern', 'pola'],
