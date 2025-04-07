@@ -1586,7 +1586,9 @@ class AIChat(models.Model):
                 result += f"Kategori: {category}\n"
                 for product in category_products:
                     result += f"- {product.name}\n"
-                    result += f"  Harga: {int(product.list_price):,}".replace(',', '.')
+                    # PERBAIKAN: Tambahkan "Rp" dan baris baru yang hilang
+                    formatted_price = "{:,}".format(int(product.list_price)).replace(',', '.')
+                    result += f"  Harga: Rp {formatted_price}\n"
                     result += f"  Stok: {product.qty_available}\n"
                     
                     # Tampilkan durasi service jika produk adalah layanan
@@ -1602,20 +1604,22 @@ class AIChat(models.Model):
                         result += f"  Wajib Ready: Ya (Min: {product.min_mandatory_stock})\n"
                     
                     result += "\n"
-            
+
             # Tambahkan statistik ringkasan
             service_products = products.filtered(lambda p: p.type == 'service')
             physical_products = products.filtered(lambda p: p.type == 'product')
-            
+
             result += f"\nRingkasan:\n"
             result += f"- Total Produk Layanan: {len(service_products)}\n"
             result += f"- Total Produk Fisik: {len(physical_products)}\n"
-            
+
             # Hitung nilai total persediaan
             if physical_products:
                 total_stock_value = sum(p.qty_available * p.standard_price for p in physical_products)
-                result += f"- Nilai Total Persediaan: {total_stock_value:,.2f}\n"
-            
+                # PERBAIKAN: Format persediaan dengan format rupiah yang benar
+                formatted_stock_value = "{:,}".format(int(total_stock_value)).replace(',', '.')
+                result += f"- Nilai Total Persediaan: Rp {formatted_stock_value}\n"
+
             return result
             
         except Exception as e:
