@@ -1389,19 +1389,22 @@ class AIChat(models.Model):
                     
                     # Tampilkan harga jual dengan format yang benar
                     if hasattr(product, 'list_price') and product.list_price:
-                        formatted_price = f"{product.list_price:,.2f}"
+                        # PERBAIKAN: Hapus "\n" yang ada di akhir format angka dan gunakan format Rupiah yang benar
+                        formatted_price = f"{int(product.list_price):,}".replace(',', '.')
                         result += f"  Harga Jual: Rp {formatted_price}\n"
                     
                     # Tampilkan harga beli/modal
                     has_purchase_access = self.env.user.has_group('purchase.group_purchase_user')
                     if (show_cost_focus or has_purchase_access) and hasattr(product, 'standard_price'):
-                        formatted_cost = f"{product.standard_price:,.2f}"
+                        # PERBAIKAN: Format angka dengan format Rupiah yang benar
+                        formatted_cost = f"{int(product.standard_price):,}".replace(',', '.')
                         result += f"  Harga Beli/Modal: Rp {formatted_cost}\n"
                         
                         # Jika ini pertanyaan fokus pada modal, tampilkan nilai persediaan
                         if show_cost_focus:
                             inventory_value = product.qty_available * product.standard_price
-                            formatted_value = f"{inventory_value:,.2f}"
+                            # PERBAIKAN: Format angka dengan format Rupiah yang benar
+                            formatted_value = f"{int(inventory_value):,}".replace(',', '.')
                             result += f"  Nilai Persediaan: Rp {formatted_value}\n"
                         
                         # Hitung dan tampilkan margin jika kedua harga tersedia
@@ -1418,16 +1421,18 @@ class AIChat(models.Model):
                     
                     result += "\n"
 
-             # Tambahkan summary khusus jika ini pertanyaan tentang modal
+            # Tambahkan summary khusus jika ini pertanyaan tentang modal
             if show_cost_focus:
                 total_inventory_value = sum(p.qty_available * p.standard_price for p in products)
                 avg_margin = sum(((p.list_price - p.standard_price) / p.list_price * 100) 
                             for p in products if p.list_price > 0) / len(products) if products else 0
                 
                 result += "\nRingkasan Nilai Persediaan:\n"
-                result += f"- Total Nilai Modal Persediaan: Rp {total_inventory_value:,.2f}\n"
+                # PERBAIKAN: Format angka dengan format Rupiah yang benar
+                formatted_total = f"{int(total_inventory_value):,}".replace(',', '.')
+                result += f"- Total Nilai Modal Persediaan: Rp {formatted_total}\n"
                 result += f"- Rata-rata Margin: {avg_margin:.2f}%\n"
-            
+
             return result
                 
         except Exception as e:
@@ -1581,7 +1586,7 @@ class AIChat(models.Model):
                 result += f"Kategori: {category}\n"
                 for product in category_products:
                     result += f"- {product.name}\n"
-                    result += f"  Harga: {product.list_price:,.2f}\n"
+                    result += f"  Harga: {int(product.list_price):,}".replace(',', '.')
                     result += f"  Stok: {product.qty_available}\n"
                     
                     # Tampilkan durasi service jika produk adalah layanan
