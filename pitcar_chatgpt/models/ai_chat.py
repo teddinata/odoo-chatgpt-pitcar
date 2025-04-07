@@ -1624,6 +1624,215 @@ class AIChat(models.Model):
             
         except Exception as e:
             return f"\n\nError mendapatkan data produk: {str(e)}"
+
+    def _get_car_analysis_data(self, message):
+        """Analyze partner car data for business insights"""
+        try:
+            # Ekstrak periode waktu dari pesan
+            time_period = self._extract_time_period(message)
+            date_from, date_to = self._get_date_range(time_period)
+            
+            # Siapkan domain untuk pencarian mobil
+            domain = []
+            
+            message_lower = message.lower()
+            
+            # Ekstrak kata kunci brand jika ada
+            brand_keywords = self._extract_car_brand_keywords(message)
+            if brand_keywords:
+                brand_domain = [('brand.name', 'ilike', kw) for kw in brand_keywords]
+                if brand_domain:
+                    domain.append('|')
+                    domain.extend(brand_domain)
+            
+            # Dapatkan semua mobil
+            cars = self.env['res.partner.car'].search(domain)
+            
+            if not cars:
+                return "Tidak ditemukan data mobil sesuai kriteria pencarian."
+            
+            # Analisis berdasarkan konteks pertanyaan
+            if 'terbanyak' in message_lower or 'populer' in message_lower:
+                return self._analyze_most_popular_cars(cars)
+            elif 'merek' in message_lower or 'brand' in message_lower:
+                return self._analyze_car_brands(cars)
+            elif 'tipe' in message_lower or 'type' in message_lower:
+                return self._analyze_car_types(cars)
+            elif 'tahun' in message_lower or 'year' in message_lower:
+                return self._analyze_car_years(cars)
+            elif 'mesin' in message_lower or 'engine' in message_lower:
+                return self._analyze_car_engines(cars)
+            else:
+                # Analisis umum
+                return self._get_general_car_statistics(cars)
+        
+        except Exception as e:
+            _logger.error(f"Error analyzing car data: {str(e)}")
+            return f"Error mendapatkan analisis data mobil: {str(e)}"
+        
+    def _analyze_most_popular_cars(self, cars):
+        """Analyze most popular cars by brand and type"""
+        # Group by brand
+        brands = {}
+        for car in cars:
+            brand_name = car.brand.name
+            if brand_name in brands:
+                brands[brand_name] += 1
+            else:
+                brands[brand_name] = 1
+        
+        # Group by type
+        types = {}
+        for car in cars:
+            type_name = f"{car.brand.name} {car.brand_type.name}"
+            if type_name in types:
+                types[type_name] += 1
+            else:
+                types[type_name] = 1
+        
+        # Sort results
+        top_brands = sorted(brands.items(), key=lambda x: x[1], reverse=True)[:10]
+        top_types = sorted(types.items(), key=lambda x: x[1], reverse=True)[:10]
+        
+        result = f"Analisis Mobil Terpopuler (Total: {len(cars)} mobil):\n\n"
+        
+        # Top brands
+        result += "Merek Terpopuler:\n"
+        for i, (brand, count) in enumerate(top_brands, 1):
+            percentage = (count / len(cars)) * 100
+            result += f"{i}. {brand}: {count} mobil ({percentage:.1f}%)\n"
+        
+        # Top types
+        result += "\nTipe Terpopuler:\n"
+        for i, (type_name, count) in enumerate(top_types, 1):
+            percentage = (count / len(cars)) * 100
+            result += f"{i}. {type_name}: {count} mobil ({percentage:.1f}%)\n"
+        
+        return result
+    
+    def _analyze_car_engines(self, cars):
+        """Analyze cars by engine type"""
+        engine_types = {}
+        for car in cars:
+            engine_type = car.engine_type or 'unknown'
+            if engine_type in engine_types:
+                engine_types[engine_type] += 1
+            else:
+                engine_types[engine_type] = 1
+        
+        # Sort results
+        sorted_engines = sorted(engine_types.items(), key=lambda x: x[1], reverse=True)
+        
+        result = f"Analisis Jenis Mesin Mobil (Total: {len(cars)} mobil):\n\n"
+        
+        # Map engine type codes to human-readable names
+        engine_names = {
+            'petrol': 'Bensin',
+            'diesel': 'Diesel',
+            'electric': 'Listrik',
+            'hybrid': 'Hybrid',
+            'gas': 'Gas',
+            'other': 'Lainnya',
+            'unknown': 'Tidak Diketahui'
+        }
+        
+        for engine_type, count in sorted_engines:
+            name = engine_names.get(engine_type, engine_type)
+            percentage = (count / len(cars)) * 100
+            result += f"- {name}: {count} mobil ({percentage:.1f}%)\n"
+        
+        return result
+    
+    def _get_top_products_analysis(self, message):
+        """Analyze top selling products and services"""
+        try:
+            # Ekstrak periode waktu dari pesan
+            time_period = self._extract_time_period(message)
+            date_from, date_to = self._get_date_range(time_period)
+            
+            message_lower = message.lower()
+            
+            # Tentukan apakah ini untuk produk atau jasa atau keduanya
+            product_type = None
+            if 'jasa' in message_lower or 'service' in message_lower or 'layanan' in message_lower:
+                product_type = 'service'
+            elif 'produk' in message_lower or 'barang' in message_lower or 'item' in message_lower:
+                product_type = 'product'
+            
+            # Query penjualan produk dalam rentang waktu tersebut
+            domain = [
+                ('order_id.date_order', '>=', date_from),
+                ('order_id.date_order', '<=', date_to),
+                ('order_id.state', 'in', ['sale', 'done'])
+            ]
+            
+            # Filter berdasarkan jenis produk jika ditentukan
+            if product_type:
+                domain.append(('product_id.type', '=', product_type))
+            
+            # Dapatkan order lines
+            order_lines = self.env['sale.order.line'].search(domain)
+            
+            if not order_lines:
+                return f"Tidak ditemukan data penjualan pada periode {date_from.strftime('%Y-%m-%d')} hingga {date_to.strftime('%Y-%m-%d')}."
+            
+            # Agregasi berdasarkan produk
+            product_sales = {}
+            for line in order_lines:
+                product_id = line.product_id.id
+                if product_id not in product_sales:
+                    product_sales[product_id] = {
+                        'name': line.product_id.name,
+                        'count': 0,
+                        'qty': 0,
+                        'amount': 0,
+                        'type': line.product_id.type
+                    }
+                product_sales[product_id]['count'] += 1
+                product_sales[product_id]['qty'] += line.product_uom_qty
+                product_sales[product_id]['amount'] += line.price_subtotal
+            
+            # Format hasil
+            if product_type == 'service':
+                title = "Jasa/Layanan Terlaris"
+            elif product_type == 'product':
+                title = "Produk Terlaris"
+            else:
+                title = "Produk & Jasa Terlaris"
+            
+            result = f"{title} ({date_from.strftime('%Y-%m-%d')} hingga {date_to.strftime('%Y-%m-%d')}):\n\n"
+            
+            # Bagi menjadi produk dan jasa
+            products = {k: v for k, v in product_sales.items() if v['type'] == 'product'}
+            services = {k: v for k, v in product_sales.items() if v['type'] == 'service'}
+            
+            # Top produk berdasarkan nilai penjualan
+            if (not product_type or product_type == 'product') and products:
+                result += "TOP PRODUK (BERDASARKAN NILAI PENJUALAN):\n"
+                sorted_products = sorted(products.values(), key=lambda x: x['amount'], reverse=True)[:10]
+                
+                for i, product in enumerate(sorted_products, 1):
+                    result += f"{i}. {product['name']}\n"
+                    result += f"   Terjual: {product['qty']} unit\n" 
+                    result += f"   Total Penjualan: Rp {product['amount']:,.2f}\n"
+                
+                result += "\n"
+            
+            # Top jasa berdasarkan nilai penjualan
+            if (not product_type or product_type == 'service') and services:
+                result += "TOP JASA/LAYANAN (BERDASARKAN NILAI PENJUALAN):\n"
+                sorted_services = sorted(services.values(), key=lambda x: x['amount'], reverse=True)[:10]
+                
+                for i, service in enumerate(sorted_services, 1):
+                    result += f"{i}. {service['name']}\n"
+                    result += f"   Jumlah Order: {service['count']}\n"
+                    result += f"   Total Penjualan: Rp {service['amount']:,.2f}\n"
+            
+            return result
+            
+        except Exception as e:
+            _logger.error(f"Error analyzing top products: {str(e)}")
+            return f"Error mendapatkan analisis produk terlaris: {str(e)}"
         
     def _get_booking_data(self, message):
         """Get service booking data based on the user's message"""
@@ -3981,6 +4190,28 @@ When answering questions:
 5. If appropriate, provide examples or analogies to explain complex topics
 """
 
+            # Tambahkan car_analysis_prompt di sini
+            car_analysis_prompt = """
+When analyzing car data from customers:
+1. Identify trends in popular car brands and types
+2. Consider how these trends should influence inventory decisions
+3. Suggest service promotions targeted at the most common vehicle types
+4. Highlight opportunities for specialized services based on engine types
+5. Analyze vehicle age distribution to anticipate service needs
+
+When discussing top selling products and services:
+1. Identify not just what's selling, but why it might be selling well
+2. Suggest complementary products or services to boost sales
+3. Identify seasonal patterns in product popularity
+4. Recommend inventory adjustments based on sales velocity
+5. Suggest pricing strategies for high-margin versus high-volume products
+
+Always connect the data to actionable business recommendations.
+"""
+
+            # Gabungkan prompt
+            base_prompt += car_analysis_prompt
+
         # Add company information for business queries
         if is_business_query:
             company_info = self._get_company_info()
@@ -4008,7 +4239,7 @@ When answering questions:
         message_lower = message.lower()
         
         # Cek apakah pertanyaan meminta laporan komprehensif
-        if any(k in message_lower for k in ['komprehensif', 'lengkap', 'menyeluruh', 'comprehensive', 'report', 'laporan']):
+        if any(k in message.lower() for k in ['komprehensif', 'lengkap', 'menyeluruh', 'comprehensive', 'report', 'laporan']):
             try:
                 return self._get_comprehensive_data(message)
             except Exception as e:
@@ -4019,6 +4250,34 @@ When answering questions:
         data_categories = self._analyze_message(message)
         
         result = []
+        max_data_per_category = 3  # Batasi maksimal 3 kategori data
+    
+        # Jika terlalu banyak kategori, prioritaskan kategori utama
+        if len(data_categories) > max_data_per_category:
+            prioritized_categories = []
+            
+            # Prioritas kategori berdasarkan kata kunci pesan
+            message_lower = message.lower()
+            
+            # Cek prioritas kategori berdasarkan kata kunci
+            if any(word in message_lower for word in ['pendapatan', 'revenue', 'income', 'sales']):
+                if 'sales' in data_categories:
+                    prioritized_categories.append('sales')
+                    
+            if any(word in message_lower for word in ['inventory', 'stok', 'barang']):
+                if 'inventory' in data_categories:
+                    prioritized_categories.append('inventory')
+                    
+            if any(word in message_lower for word in ['finance', 'keuangan', 'accounting']):
+                if 'finance' in data_categories:
+                    prioritized_categories.append('finance')
+            
+            # Tambahkan kategori lain hingga maksimum
+            for category in data_categories:
+                if category not in prioritized_categories and len(prioritized_categories) < max_data_per_category:
+                    prioritized_categories.append(category)
+            
+            data_categories = prioritized_categories
         
         # Prioritaskan pencarian produk jika ada kategori produk atau inventaris
         if 'product' in data_categories or 'inventory' in data_categories:
@@ -4037,6 +4296,20 @@ When answering questions:
                 continue
             
             method_name = f"_get_{category}_data"
+
+            # Khusus untuk kategori baru, gunakan fungsi analisis khusus
+            if category == 'car_analysis':
+                car_data = self._get_car_analysis_data(message)
+                if car_data:
+                    result.append(car_data)
+                continue
+                
+            if category == 'top_products':
+                top_products_data = self._get_top_products_analysis(message)
+                if top_products_data:
+                    result.append(top_products_data)
+                continue
+            
             if hasattr(self, method_name):
                 try:
                     category_data = getattr(self, method_name)(message)
@@ -4179,7 +4452,17 @@ When answering questions:
             'inventory': ['inventory', 'stock', 'product', 'warehouse', 'item', 'persediaan', 
                         'stok', 'produk', 'gudang', 'barang', 'sparepart', 'part', 'supply', 
                         'pasokan', 'goods', 'material', 'katalog', 'catalog', 'valuation', 
-                        'nilai persediaan', 'inventory value', 'modal barang', 'cost'],           
+                        'nilai persediaan', 'inventory value', 'modal barang', 'cost'],
+
+             # Tambahkan kategori baru
+            'car_analysis': ['mobil', 'kendaraan', 'car', 'vehicle', 'merek', 'brand', 'tipe', 'type', 
+                            'populer', 'terbanyak', 'engine', 'mesin', 'tahun', 'year', 'transmission',
+                            'transmisi', 'warna', 'color', 'pelanggan', 'customer'],
+            
+            'top_products': ['terlaris', 'best seller', 'top product', 'top service', 'most sold',
+                            'penjualan tertinggi', 'paling laku', 'favorit', 'favorite', 'popular',
+                            'populer', 'terfavorit', 'top selling', 'best performing'],
+                                    
             'employees': ['employee', 'staff', 'hr', 'attendance', 'absensi', 'karyawan', 'pegawai', 'sdm', 'hadir', 'kehadiran', 'performance', 'kinerja', 'productivity', 'produktivitas', 'skill', 'kompensasi', 'compensation', 'payroll', 'penggajian', 'training', 'pelatihan'],            
             'purchases': ['purchase', 'vendor', 'supplier', 'pembelian', 'vendor', 'pemasok', 'procurement', 'pengadaan', 'order', 'pesanan', 'requisition', 'permintaan', 'delivery', 'pengiriman', 'po', 'purchase order'],            
             'service': ['service', 'advisor', 'mechanic', 'mekanik', 'servis', 'lead time', 'durasi', 'sa', 'sparepart', 'part', 'customer satisfaction', 'kepuasan pelanggan', 'quality', 'kualitas', 'maintenance', 'perawatan', 'repair', 'perbaikan', 'workshop', 'bengkel', 'stall', 'pit'],           
